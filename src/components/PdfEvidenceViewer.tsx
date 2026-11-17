@@ -10,7 +10,11 @@ import {
   ZoomOut,
   AlertCircle,
 } from 'lucide-react';
-import { cleanSelectedPdfQuote } from '../utils/goldRules';
+import {
+  cleanSelectedPdfQuote,
+  findTextMatchRanges,
+  splitPdfPageIntoParagraphs,
+} from '../utils/goldRules';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -67,16 +71,53 @@ const DemoWatermarkOverlay: React.FC = () => {
   );
 };
 
+interface HighlightedEvidenceInput {
+  page: number;
+  quote: string;
+  label?: string;
+}
+
 interface PdfEvidenceViewerProps {
   pdfUrl: string;
   sourceFilename: string;
   currentPage: number;
   onPageChange: (page: number) => void;
   onPageCountDetected?: (count: number) => void;
+  onPageTextsExtracted?: (texts: Record<number, string>) => void;
+  highlightedEvidences?: HighlightedEvidenceInput[];
   selectedQuote: { page: number; quote: string } | null;
   onSelectQuote: (selection: { page: number; quote: string } | null) => void;
   activeTargetLabel: string | null;
   onApplyQuoteToTarget: (page: number, quote: string) => void;
+}
+
+function applyTextLayerHighlights(container: HTMLElement | null, quotes: string[]): number {
+  if (!container) return 0;
+  const spans = Array.from(container.querySelectorAll('span'));
+  for (const sp of spans) {
+    sp.classList.remove('pdf-evidence-match');
+  }
+  if (quotes.length === 0 || spans.length === 0) return 0;
+
+  let fullText = '';
+  const spanRanges: Array<{ span: HTMLSpanElement; start: number; end: number }> = [];
+  for (const sp of spans) {
+    const t = sp.textContent || '';
+    if (!t) continue;
+    const start = fullText.length;
+    fullText += t;
+    spanRanges.push({ span: sp, start, end: fullText.length });
+  }
+  const matches = findTextMatchRanges(fullText, quotes);
+  if (matches.length === 0) return 0;
+
+  for (const { span, start, end } of spanRanges) {
+    const overlaps = matches.some((m) => m.start < end && m.end > start);
+    if (overlaps) {
+      span.classList.add('pdf-evidence-match');
+    }
+  }
+  return matches.length;
 }
 
 export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
@@ -85,6 +126,8 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
   currentPage,
   onPageChange,
   onPageCountDetected,
+  onPageTextsExtracted,
+  highlightedEvidences = [],
   selectedQuote,
   onSelectQuote,
   activeTargetLabel,
@@ -98,6 +141,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [manualQuoteDraft, setManualQuoteDraft] = useState<string>('');
+  const [textLayerReadyTick, setTextLayerReadyTick] = useState<number>(0);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
@@ -112,6 +156,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
     setError(null);
     setPdfDoc(null);
     setPageTexts({});
+    onPageTextsExtracted?.({});
 
     (async () => {
       try {
@@ -163,6 +208,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
         }
         if (!cancelled) {
           setPageTexts(texts);
+          onPageTextsExtracted?.(texts);
         }
       } catch (err) {
         if (cancelled || abortController.signal.aborted) return;
@@ -222,6 +268,9 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
           viewport,
         });
         await textLayerInstance.render();
+        if (!cancelled) {
+          setTextLayerReadyTick((n) => n + 1);
+        }
       } catch (err) {
         if (!cancelled && !(err instanceof pdfjsLib.RenderingCancelledException)) {
           setError(err instanceof Error ? err.message : 'PDF 页面渲染失败');
@@ -235,6 +284,19 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
       textLayerInstance?.cancel();
     };
   }, [pdfDoc, currentPage, scale, viewMode]);
+
+  // Apply highlighted chain quotes onto rendered PDF textLayer without re-rendering canvas
+  const currentPageHighlightQuotes = highlightedEvidences
+    .filter((ev) => ev.page === currentPage && ev.quote.trim())
+    .map((ev) => ev.quote);
+  const highlightPages = Array.from(
+    new Set(highlightedEvidences.map((ev) => ev.page).filter((p) => p >= 1)),
+  ).sort((a, b) => a - b);
+
+  useEffect(() => {
+    if (viewMode !== 'canvas') return;
+    applyTextLayerHighlights(textLayerRef.current, currentPageHighlightQuotes);
+  }, [viewMode, textLayerReadyTick, currentPage, highlightedEvidences]);
 
   // Capture text selection inside the PDF / proofreading container
   const handleMouseUpCapture = () => {
@@ -343,6 +405,34 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
         </div>
       </div>
 
+      {/* Active Evidence Chain Highlight Strip */}
+      {highlightedEvidences.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 bg-amber-50/80 px-3 py-1.5 text-xs text-amber-950">
+          <span>
+            当前证据链高亮 <strong className="font-mono-tabular">{highlightedEvidences.length}</strong> 条引用
+            {currentPageHighlightQuotes.length > 0
+              ? ` · 本页命中 ${currentPageHighlightQuotes.length} 条`
+              : ' · 当前页无引用'}
+          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            {highlightPages.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => onPageChange(p)}
+                className={`font-mono-tabular whitespace-nowrap rounded px-1.5 py-0.5 text-xs transition-colors ${
+                  p === currentPage
+                    ? 'bg-amber-200 font-semibold text-amber-950'
+                    : 'text-amber-900 underline-offset-2 hover:underline'
+                }`}
+              >
+                第 {p} 页
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Document Viewport */}
       <div
         ref={viewerRegionRef}
@@ -380,9 +470,53 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
               <span>第 {currentPage} 页文本</span>
               <span className="font-mono-tabular">共 {numPages} 页</span>
             </div>
-            <pre className="relative z-[1] whitespace-pre-wrap font-sans text-sm leading-7 text-slate-800 select-text">
-              {pageTexts[currentPage] || '（本页未提取到文本层，请切回原件图文查看扫描件）'}
-            </pre>
+            {!pageTexts[currentPage] ? (
+              <p className="relative z-[1] text-sm text-slate-500">
+                （本页未提取到文本层，请切回原件图文查看扫描件）
+              </p>
+            ) : (
+              <div className="relative z-[1] flex flex-col gap-2 text-sm leading-7 text-slate-800 select-text">
+                {splitPdfPageIntoParagraphs(pageTexts[currentPage]).map((para, pIdx) => {
+                  const ranges = findTextMatchRanges(para, currentPageHighlightQuotes);
+                  const isMatched = ranges.length > 0;
+                  if (!isMatched) {
+                    return (
+                      <p key={pIdx} className="rounded px-2 py-0.5">
+                        {para}
+                      </p>
+                    );
+                  }
+                  const parts: React.ReactNode[] = [];
+                  let cursor = 0;
+                  ranges.forEach((r, rIdx) => {
+                    if (r.start > cursor) {
+                      parts.push(para.slice(cursor, r.start));
+                    }
+                    parts.push(
+                      <mark
+                        key={rIdx}
+                        className="rounded-xs bg-amber-200/80 px-0.5 text-slate-900"
+                      >
+                        {para.slice(r.start, r.end)}
+                      </mark>,
+                    );
+                    cursor = r.end;
+                  });
+                  if (cursor < para.length) {
+                    parts.push(para.slice(cursor));
+                  }
+                  return (
+                    <p
+                      key={pIdx}
+                      data-highlighted-paragraph="true"
+                      className="rounded border border-amber-300 bg-amber-50/80 px-2.5 py-1 text-slate-900"
+                    >
+                      {parts}
+                    </p>
+                  );
+                })}
+              </div>
+            )}
             <DemoWatermarkOverlay />
           </div>
         )}

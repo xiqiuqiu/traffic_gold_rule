@@ -1,6 +1,7 @@
 import {
   ACCEPTANCE_CHECKLIST_ITEMS,
   ENTITY_KIND_META,
+  INITIAL_VOCABULARY_SUPPLEMENTS,
   MASTER_FIELD_SCHEMA,
   PRESENCE_STATUS_META,
   REVIEW_STATUS_META,
@@ -8,6 +9,8 @@ import {
 import {
   CaseDocument,
   CaseWorkItem,
+  ChainConsistencyCheck,
+  ChainEvidenceEntry,
   EntityItem,
   EntityKind,
   EntityProgressSummary,
@@ -16,10 +19,16 @@ import {
   FieldFilterBucket,
   FieldRecord,
   LegalConclusionItem,
+  LegalEvidenceChain,
+  MatchedPdfParagraph,
   PresenceStatus,
   ReadinessSummary,
   ReviewStatus,
   ValidationIssue,
+  ViolationEntityMatch,
+  ViolationLinkScanResult,
+  ViolationVocabMatch,
+  VocabularySupplementItem,
   WorkItemFilterStatus,
 } from '../types/gold';
 
@@ -123,7 +132,13 @@ export function validateFieldRecord(record: FieldRecord): ValidationIssue[] {
   return issues;
 }
 
-export function validateLegalConclusion(item: LegalConclusionItem): ValidationIssue[] {
+export function validateLegalConclusion(
+  item: LegalConclusionItem,
+  context?: {
+    entities?: EntityItem[];
+    supplements?: VocabularySupplementItem[];
+  },
+): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const statusRule = PRESENCE_STATUS_META[item.presenceStatus];
 
@@ -149,6 +164,21 @@ export function validateLegalConclusion(item: LegalConclusionItem): ValidationIs
         code: 'MISSING_EVIDENCE',
         severity: 'error',
         message: '法律结论必须附带准确页码与最短原文证据',
+      });
+    }
+  }
+
+  if (item.category === 'violation' && context?.entities) {
+    const scan = scanViolationLinkMatches(
+      item,
+      context.entities,
+      context.supplements || INITIAL_VOCABULARY_SUPPLEMENTS,
+    );
+    if (scan.needsConfirmationError) {
+      issues.push({
+        code: 'VIOLATION_LINK_CONSISTENCY_UNCONFIRMED',
+        severity: 'error',
+        message: `已扫描到 ${scan.vocabMatches.length} 项受控词表与 ${scan.entityMatches.length} 项案件实体匹配，请一键关联并确认关联一致性`,
       });
     }
   }
@@ -221,7 +251,10 @@ export function validateRelation(item: EventRelationItem): ValidationIssue[] {
   return issues;
 }
 
-export function computeCaseReadiness(caseDoc: CaseDocument): ReadinessSummary {
+export function computeCaseReadiness(
+  caseDoc: CaseDocument,
+  supplements: VocabularySupplementItem[] = INITIAL_VOCABULARY_SUPPLEMENTS,
+): ReadinessSummary {
   const statusCounts: Record<ReviewStatus, number> = {
     draft: 0,
     checked: 0,
@@ -246,7 +279,7 @@ export function computeCaseReadiness(caseDoc: CaseDocument): ReadinessSummary {
     if (PRESENCE_STATUS_META[l.presenceStatus].blocksScoring) {
       blockingPresenceCount += 1;
     }
-    const issues = validateLegalConclusion(l);
+    const issues = validateLegalConclusion(l, { entities: caseDoc.entities, supplements });
     validationErrors += issues.filter((i) => i.severity === 'error').length;
   }
 
@@ -676,7 +709,10 @@ export function matchesFieldRecordBucket(
   );
 }
 
-export function collectCaseWorkItems(caseDoc: CaseDocument): CaseWorkItem[] {
+export function collectCaseWorkItems(
+  caseDoc: CaseDocument,
+  supplements: VocabularySupplementItem[] = INITIAL_VOCABULARY_SUPPLEMENTS,
+): CaseWorkItem[] {
   const schemaByCode = new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f]));
   const items: CaseWorkItem[] = [];
 
@@ -723,7 +759,10 @@ export function collectCaseWorkItems(caseDoc: CaseDocument): CaseWorkItem[] {
   }
 
   for (const l of caseDoc.legalConclusions) {
-    const errors = validateLegalConclusion(l).filter((i) => i.severity === 'error');
+    const errors = validateLegalConclusion(l, {
+      entities: caseDoc.entities,
+      supplements,
+    }).filter((i) => i.severity === 'error');
     const isBlockingPresence = PRESENCE_STATUS_META[l.presenceStatus].blocksScoring;
     const hasBlockingOrError = isBlockingPresence || errors.length > 0;
     const needsAttention =
@@ -841,8 +880,9 @@ export function filterWorkItems(
 
 export function computeEntityProgressMap(
   caseDoc: CaseDocument,
+  supplements: VocabularySupplementItem[] = INITIAL_VOCABULARY_SUPPLEMENTS,
 ): Record<string, EntityProgressSummary> {
-  const workItems = collectCaseWorkItems(caseDoc);
+  const workItems = collectCaseWorkItems(caseDoc, supplements);
   const result: Record<string, EntityProgressSummary> = {};
 
   for (const entity of caseDoc.entities) {
@@ -894,6 +934,7 @@ export function computeEntityProgressMap(
 export function computeEntityWorkbenchStats(
   caseDoc: CaseDocument,
   entityId: string,
+  supplements: VocabularySupplementItem[] = INITIAL_VOCABULARY_SUPPLEMENTS,
 ): Record<FieldFilterBucket, number> {
   const entity = caseDoc.entities.find((e) => e.id === entityId);
   const applicableDefs = entity
@@ -907,7 +948,7 @@ export function computeEntityWorkbenchStats(
       .map((r) => [r.fieldCode, r]),
   );
 
-  const progress = computeEntityProgressMap(caseDoc)[entityId];
+  const progress = computeEntityProgressMap(caseDoc, supplements)[entityId];
   const counts: Record<FieldFilterBucket, number> = {
     all:
       (progress?.totalItems ?? 0) +
@@ -923,5 +964,743 @@ export function computeEntityWorkbenchStats(
 
   return counts;
 }
+
+export function normalizePdfTextForDisplay(text: string): string {
+  if (!text) return '';
+  return text
+    .replace(
+      /([\u4e00-\u9fa5，。；：、“”‘’（）《》【】、\dA-Za-z])\s+(?=[\u4e00-\u9fa5，。；：、“”‘’（）《》【】])/g,
+      '$1',
+    )
+    .replace(
+      /([\u4e00-\u9fa5，。；：、“”‘’（）《》【】])\s+(?=[\dA-Za-z])/g,
+      '$1',
+    )
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+}
+
+const SECTION_HEADING_RE =
+  /^([一二三四五六七八九十]+[、.．]|【[^】]+】|●|道路交通事故[^：:]*[：:]|当事人[^：:]*[：:]|办案交通警察)/;
+
+export function splitPdfPageIntoParagraphs(pageText: string): string[] {
+  if (!pageText || !pageText.trim()) return [];
+  const rawLines = pageText.split(/\r?\n/);
+  const paragraphs: string[] = [];
+  let buffer = '';
+
+  const flush = () => {
+    const cleaned = normalizePdfTextForDisplay(buffer);
+    if (cleaned) paragraphs.push(cleaned);
+    buffer = '';
+  };
+
+  for (const rawLine of rawLines) {
+    const line = normalizePdfTextForDisplay(rawLine);
+    if (!line) {
+      flush();
+      continue;
+    }
+
+    const isHeading =
+      SECTION_HEADING_RE.test(line) ||
+      (line.length <= 24 && /[：:]$/.test(line)) ||
+      /^道路交通事故认定书$/.test(line);
+
+    if (isHeading) {
+      // Inline bracket tags like 【事故原因分析】... stay attached to their sentence,
+      // while standalone headings flush any prior block first.
+      flush();
+      buffer = line;
+      if (line.length <= 26 && !/[。；]$/.test(line) && !/^【[^】]+】.+/.test(line)) {
+        flush();
+      }
+      continue;
+    }
+
+    if (!buffer) {
+      buffer = line;
+    } else {
+      const prevShortSentenceEnd = buffer.length <= 36 && /[。；]$/.test(buffer);
+      if (prevShortSentenceEnd) {
+        flush();
+        buffer = line;
+      } else {
+        const needsSpace =
+          /[A-Za-z0-9]$/.test(buffer) && /^[A-Za-z0-9]/.test(line) ? ' ' : '';
+        buffer += needsSpace + line;
+      }
+    }
+  }
+  flush();
+  return paragraphs;
+}
+
+export function findTextMatchRanges(
+  text: string,
+  quotes: string[],
+): Array<{ start: number; end: number }> {
+  if (!text || quotes.length === 0) return [];
+
+  const compactChars: string[] = [];
+  const compactToOrig: number[] = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (!/\s/.test(ch)) {
+      compactChars.push(ch.toLowerCase());
+      compactToOrig.push(i);
+    }
+  }
+  const compactText = compactChars.join('');
+  if (!compactText) return [];
+
+  const rawRanges: Array<{ start: number; end: number }> = [];
+
+  for (const rawQuote of quotes) {
+    const trimmed = rawQuote.trim();
+    if (!trimmed) continue;
+    const segments = trimmed
+      .split(/\.{3,}|…+/)
+      .map((seg) => seg.replace(/\s+/g, '').toLowerCase())
+      .filter((seg) => seg.length >= 3);
+
+    const effectiveSegments =
+      segments.length > 0
+        ? segments
+        : [trimmed.replace(/\s+/g, '').toLowerCase()].filter((s) => s.length >= 2);
+
+    for (const seg of effectiveSegments) {
+      let fromIdx = 0;
+      while (fromIdx < compactText.length) {
+        const idx = compactText.indexOf(seg, fromIdx);
+        if (idx === -1) break;
+        const startOrig = compactToOrig[idx];
+        const endOrig = compactToOrig[idx + seg.length - 1] + 1;
+        rawRanges.push({ start: startOrig, end: endOrig });
+        fromIdx = idx + seg.length;
+      }
+    }
+  }
+
+  if (rawRanges.length === 0) return [];
+  rawRanges.sort((a, b) => a.start - b.start || a.end - b.end);
+
+  const merged: Array<{ start: number; end: number }> = [rawRanges[0]];
+  for (let i = 1; i < rawRanges.length; i += 1) {
+    const prev = merged[merged.length - 1];
+    const curr = rawRanges[i];
+    if (curr.start <= prev.end) {
+      prev.end = Math.max(prev.end, curr.end);
+    } else {
+      merged.push(curr);
+    }
+  }
+  return merged;
+}
+
+export function traceLegalEvidenceChain(
+  caseDoc: CaseDocument,
+  anchorId: string,
+): LegalEvidenceChain | null {
+  const anchorItem = caseDoc.legalConclusions.find((l) => l.id === anchorId);
+  if (!anchorItem) return null;
+
+  const allViolations = caseDoc.legalConclusions.filter((l) => l.category === 'violation');
+  const allCauses = caseDoc.legalConclusions.filter((l) => l.category === 'cause');
+  const allLiabilities = caseDoc.legalConclusions.filter((l) => l.category === 'liability');
+
+  let violations: LegalConclusionItem[] = [];
+  let causes: LegalConclusionItem[] = [];
+  let liabilities: LegalConclusionItem[] = [];
+
+  if (anchorItem.category === 'violation') {
+    violations = [anchorItem];
+    causes = allCauses.filter((c) => (c.linkedViolationIds || []).includes(anchorItem.id));
+    const causeIds = new Set(causes.map((c) => c.id));
+    liabilities = allLiabilities.filter((l) =>
+      (l.linkedCauseIds || []).some((cid) => causeIds.has(cid)),
+    );
+  } else if (anchorItem.category === 'cause') {
+    causes = [anchorItem];
+    const vioSet = new Set(anchorItem.linkedViolationIds || []);
+    violations = allViolations.filter((v) => vioSet.has(v.id));
+    liabilities = allLiabilities.filter((l) =>
+      (l.linkedCauseIds || []).includes(anchorItem.id),
+    );
+  } else {
+    liabilities = [anchorItem];
+    const causeSet = new Set(anchorItem.linkedCauseIds || []);
+    causes = allCauses.filter((c) => causeSet.has(c.id));
+    const vioSet = new Set(causes.flatMap((c) => c.linkedViolationIds || []));
+    violations = allViolations.filter((v) => vioSet.has(v.id));
+  }
+
+  const subjectOrder: string[] = [];
+  const pushSubject = (sid: string) => {
+    if (sid && !subjectOrder.includes(sid)) subjectOrder.push(sid);
+  };
+  for (const v of violations) pushSubject(v.subjectId);
+  for (const c of causes) pushSubject(c.subjectId);
+  for (const l of liabilities) pushSubject(l.subjectId);
+
+  const subjects = caseDoc.entities.filter((e) => subjectOrder.includes(e.id));
+  const partyFieldRecords = caseDoc.fieldRecords.filter((r) =>
+    subjectOrder.includes(r.entityId),
+  );
+
+  const chainEventIds = new Set(
+    [...violations, ...causes, ...liabilities].map((x) => x.eventId).filter(Boolean),
+  );
+  const relatedRelations = caseDoc.relations.filter(
+    (rel) =>
+      chainEventIds.has(rel.eventId) ||
+      subjectOrder.includes(cleanRelationEntityId(rel.sourceId)) ||
+      subjectOrder.includes(cleanRelationEntityId(rel.targetId)),
+  );
+
+  const evidences: ChainEvidenceEntry[] = [];
+  const pushLegalEvidences = (
+    item: LegalConclusionItem,
+    sourceLabel: string,
+  ) => {
+    for (const ev of item.evidences) {
+      if (!ev.quote.trim()) continue;
+      evidences.push({
+        id: `${item.id}:${ev.id}`,
+        sourceId: item.id,
+        sourceKind: item.category,
+        sourceLabel,
+        subjectId: item.subjectId,
+        page: ev.page,
+        quote: ev.quote,
+      });
+    }
+  };
+
+  for (const v of violations) {
+    pushLegalEvidences(v, `${v.id} · 认定违法`);
+  }
+  for (const c of causes) {
+    pushLegalEvidences(c, `${c.id} · 认定原因`);
+  }
+  for (const l of liabilities) {
+    pushLegalEvidences(l, `${l.id} · 责任划分`);
+  }
+
+  const consistencyChecks: ChainConsistencyCheck[] = [];
+  const chainNodes = [...violations, ...causes, ...liabilities];
+
+  const missingEvidenceNodes = chainNodes.filter((node) => {
+    const rule = PRESENCE_STATUS_META[node.presenceStatus];
+    if (!rule.requiresValueAndEvidence) return false;
+    const validEvs = node.evidences.filter((e) => e.page >= 1 && e.quote.trim().length > 0);
+    return !node.rawText.trim() || validEvs.length === 0;
+  });
+  if (missingEvidenceNodes.length > 0) {
+    consistencyChecks.push({
+      code: 'CHAIN_NODE_MISSING_EVIDENCE',
+      severity: 'error',
+      message: `链路中 ${missingEvidenceNodes.map((n) => n.id).join('、')} 缺少文书原文或有效页码证据`,
+    });
+  }
+
+  if (anchorItem.category === 'violation') {
+    if (anchorItem.presenceStatus === 'explicit_negative') {
+      consistencyChecks.push({
+        code: 'EXPLICIT_NEGATIVE_VIOLATION',
+        severity: 'pass',
+        message: '该项为明确无违法记录，按规则不强制要求因果原因关联',
+      });
+    } else if (anchorItem.presenceStatus === 'present' && causes.length === 0) {
+      consistencyChecks.push({
+        code: 'VIOLATION_WITHOUT_CAUSE',
+        severity: 'warning',
+        message: '该违法行为尚未被任何认定原因引用，建议核对文书是否将其作为事故原因',
+      });
+    } else if (causes.length > 0 && liabilities.length === 0) {
+      consistencyChecks.push({
+        code: 'CAUSE_WITHOUT_LIABILITY',
+        severity: 'warning',
+        message: '已关联认定原因，但尚无责任划分引用该原因，建议补全对应责任链',
+      });
+    }
+  }
+
+  for (const c of causes) {
+    if (
+      (c.causalLinkStatus === 'explicit_linked' || c.causalLinkStatus === 'multiple_mixed') &&
+      (!c.linkedViolationIds || c.linkedViolationIds.length === 0)
+    ) {
+      consistencyChecks.push({
+        code: 'CAUSE_MISSING_VIOLATION_LINK',
+        severity: 'warning',
+        message: `原因 ${c.id} 已标记关联违法，但尚未绑定违法行为记录`,
+      });
+    }
+  }
+
+  for (const l of liabilities) {
+    if (
+      l.presenceStatus === 'present' &&
+      l.conclusionLabel.trim() === '无责任' &&
+      causes.length === 0
+    ) {
+      consistencyChecks.push({
+        code: 'NO_FAULT_LIABILITY_EXEMPT',
+        severity: 'pass',
+        message: '该项为“无责任”认定，无需关联致因记录',
+      });
+    } else if (
+      l.presenceStatus === 'present' &&
+      l.conclusionLabel.trim() !== '无责任' &&
+      (!l.linkedCauseIds || l.linkedCauseIds.length === 0 || causes.length === 0)
+    ) {
+      consistencyChecks.push({
+        code: 'LIABILITY_MISSING_CAUSE_LINK',
+        severity: 'warning',
+        message: `有责认定 ${l.id} 尚未关联认定事故原因依据`,
+      });
+    }
+  }
+
+  if (subjectOrder.length > 1) {
+    consistencyChecks.push({
+      code: 'MULTI_SUBJECT_CHAIN',
+      severity: 'warning',
+      message: `当前链路跨越多个主体（${subjectOrder.join(' / ')}），请核对跨主体因果/责任归属是否与文书一致`,
+    });
+  }
+
+  const hasIssue = consistencyChecks.some(
+    (c) => c.severity === 'error' || c.severity === 'warning',
+  );
+  if (!hasIssue && consistencyChecks.length === 0) {
+    consistencyChecks.push({
+      code: 'CHAIN_COMPLETE_AND_CONSISTENT',
+      severity: 'pass',
+      message: '证据链闭环完整：违法 → 原因 → 责任关联严密，且均附带文书原文与页码证据',
+    });
+  }
+
+  return {
+    anchorItem,
+    violations,
+    causes,
+    liabilities,
+    subjectIds: subjectOrder,
+    subjects,
+    partyFieldRecords,
+    relatedRelations,
+    evidences,
+    consistencyChecks,
+  };
+}
+
+export function extractPdfParagraphMatches(
+  pageTexts: Record<number, string>,
+  evidences: ChainEvidenceEntry[],
+): MatchedPdfParagraph[] {
+  const results: MatchedPdfParagraph[] = [];
+  const pageNumbers = Object.keys(pageTexts)
+    .map((p) => parseInt(p, 10))
+    .filter((p) => !Number.isNaN(p))
+    .sort((a, b) => a - b);
+
+  for (const page of pageNumbers) {
+    const paragraphs = splitPdfPageIntoParagraphs(pageTexts[page] || '');
+    const pageEvs = evidences.filter((ev) => ev.page === page);
+    paragraphs.forEach((text, paragraphIndex) => {
+      const matchedEvidences = pageEvs.filter(
+        (ev) => findTextMatchRanges(text, [ev.quote]).length > 0,
+      );
+      results.push({
+        page,
+        paragraphIndex,
+        text,
+        matchedEvidences,
+      });
+    });
+  }
+  return results;
+}
+
+const WFXW_NARRATIVE_KEYWORDS: Record<string, string[]> = {
+  行经人行横道未停车让行: ['行经人行横道', '未停车让行', '未减速行驶', '礼让行人', '通过人行横道'],
+  未按操作规范安全驾驶: ['未按操作规范', '操作规范安全驾驶', '未注意观察'],
+  开关车门妨碍其他车辆通行: ['开关车门', '开启车门', '开启左前车门', '开启右车门', '开车门'],
+  低能见度未开灯降速: ['低能见度', '未按规定开启雾灯', '未开灯', '降低行驶速度', '团雾'],
+  未保持安全车距: ['未保持安全车距', '安全车距', '安全距离', '未与前车保持安全距离'],
+  违规连续变更车道: ['连续变更', '连续变道', '违规变道', '变更车道'],
+  超速行驶: ['超速行驶', '超速', '超过限速', '超过规定时速'],
+  无违法行为: ['无违法行为', '无违法及过错', '无交通违法'],
+};
+
+const ENTITY_ALIAS_STOPWORDS = new Set([
+  '驾驶人',
+  '甲方驾驶人',
+  '乙方行人',
+  '乙方骑行人',
+  '行人',
+  '乘客',
+  '机动车',
+  '小型普通客车',
+  '小型轿车',
+  '电动自行车',
+  '事故',
+  '车辆',
+  '道路',
+  '路口',
+  '无号牌',
+  '第一阶段',
+  '第二阶段',
+  '第三阶段',
+  '隐含参与方',
+]);
+
+export function buildViolationConsistencyFingerprint(item: LegalConclusionItem): string {
+  return [
+    item.subjectId.trim(),
+    item.eventId.trim(),
+    item.presenceStatus,
+    item.conclusionLabel.trim(),
+    item.rawText.trim(),
+    item.lawArticle.trim(),
+  ].join('|');
+}
+
+function extractEntitySearchAliases(entity: EntityItem): string[] {
+  if (entity.kind === 'ACC') return [];
+  const candidates: string[] = [];
+  const rawLabel = (entity.label || '').trim();
+  const stripped = rawLabel.replace(/[（(][^）)]*[）)]/g, ' ').trim();
+  if (stripped && !ENTITY_ALIAS_STOPWORDS.has(stripped)) {
+    candidates.push(stripped);
+  }
+  const parts = rawLabel
+    .replace(/^(第一阶段|第二阶段|第三阶段)[：:]/, '')
+    .split(/[（()）·、/，,：:\s]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length >= 2 && !ENTITY_ALIAS_STOPWORDS.has(s));
+  for (const p of parts) {
+    if (!candidates.includes(p)) candidates.push(p);
+  }
+  // Extract core road/location sub-tokens like "八一大道", "阳明路口", "人行横道"
+  const roadMatches = rawLabel.match(
+    /[\u4e00-\u9fa5A-Za-z0-9]{1,6}(?:大道|东路|西路|南路|北路|高速|路口|立交|路|街)/g,
+  );
+  if (roadMatches) {
+    for (const rm of roadMatches) {
+      if (rm.length >= 3 && !ENTITY_ALIAS_STOPWORDS.has(rm) && !candidates.includes(rm)) {
+        candidates.push(rm);
+      }
+    }
+  }
+  if (entity.kind === 'R' || entity.kind === 'I') {
+    const facilityMatches = rawLabel.match(
+      /(?:人行横道|非机动车道|机动车道|应急车道|快车道|慢车道|十字路口)/g,
+    );
+    if (facilityMatches) {
+      for (const fm of facilityMatches) {
+        if (!candidates.includes(fm)) {
+          candidates.push(fm);
+        }
+      }
+    }
+  }
+  return candidates;
+}
+
+export function scanViolationLinkMatches(
+  item: LegalConclusionItem,
+  entities: EntityItem[],
+  supplements: VocabularySupplementItem[] = INITIAL_VOCABULARY_SUPPLEMENTS,
+): ViolationLinkScanResult {
+  const fingerprint = buildViolationConsistencyFingerprint(item);
+  const emptyResult: ViolationLinkScanResult = {
+    vocabMatches: [],
+    entityMatches: [],
+    hasAnyMatch: false,
+    hasUnlinkedMatch: false,
+    hasSubjectMismatch: false,
+    isConfirmed: item.linkConsistencyConfirmed === true,
+    needsConfirmationError: false,
+    fingerprint,
+  };
+
+  if (item.category !== 'violation') return emptyResult;
+  if (PRESENCE_STATUS_META[item.presenceStatus].forbidsValue) return emptyResult;
+
+  const hasContent =
+    item.rawText.trim().length > 0 ||
+    item.conclusionLabel.trim().length > 0 ||
+    item.lawArticle.trim().length > 0;
+  if (!hasContent) return emptyResult;
+
+  const combinedText = normalizePdfTextForDisplay(
+    `${item.conclusionLabel} ${item.rawText} ${item.lawArticle}`,
+  );
+  const compactText = combinedText.replace(/\s+/g, '').toLowerCase();
+  if (!compactText) return emptyResult;
+
+  const linkedVocabSet = new Set(item.linkedVocabTerms || []);
+  const linkedEntitySet = new Set(item.linkedEntityIds || []);
+  const vocabMatches: ViolationVocabMatch[] = [];
+  const seenVocabKeys = new Set<string>();
+
+  // 1. Scan D10.F058 (wfxw) controlled vocabulary
+  const violationDef = MASTER_FIELD_SCHEMA.find((f) => f.fieldCode === 'D10.F058');
+  const d10Supplement = supplements.find((s) => s.fieldCode === 'D10.F058');
+  const primaryTerms = Array.from(
+    new Set([
+      ...(violationDef?.presetOptions || []),
+      ...(d10Supplement?.candidateOptions || []),
+    ]),
+  );
+
+  for (const term of primaryTerms) {
+    if (term === '无违法行为' && item.presenceStatus === 'present' && !compactText.includes('无违法')) {
+      continue;
+    }
+    const compactTerm = term.replace(/\s+/g, '').toLowerCase();
+    let matchedBy = '';
+    if (compactText.includes(compactTerm)) {
+      matchedBy = term;
+    } else {
+      const keywords = WFXW_NARRATIVE_KEYWORDS[term] || [];
+      const hitKw = keywords.find((kw) => compactText.includes(kw.replace(/\s+/g, '').toLowerCase()));
+      if (hitKw) matchedBy = hitKw;
+    }
+    if (matchedBy) {
+      const vocabKey = `D10.F058:${term}`;
+      if (!seenVocabKeys.has(vocabKey)) {
+        seenVocabKeys.add(vocabKey);
+        vocabMatches.push({
+          vocabKey,
+          fieldCode: 'D10.F058',
+          fieldName: violationDef?.fieldName || '认定违法行为',
+          codeTable: violationDef?.existingCodeTable || 'wfxw',
+          standardTerm: term,
+          matchedBy,
+          isPrimaryStandard: true,
+          isLinked:
+            item.conclusionLabel.trim() === term || linkedVocabSet.has(vocabKey),
+        });
+      }
+    }
+  }
+
+  // 2. Scan supplementary controlled vocabularies (actions, runtime states, road space, etc.)
+  for (const sup of supplements) {
+    if (sup.fieldCode === 'D10.F058') continue;
+    const termPool = Array.from(
+      new Set([
+        ...sup.candidateOptions,
+        ...(sup.synonyms
+          ? sup.synonyms
+              .split(/[、，,/；;]/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+          : []),
+      ]),
+    );
+    for (const candidate of sup.candidateOptions) {
+      const compactCand = candidate.replace(/\s+/g, '').toLowerCase();
+      if (compactCand.length < 2) continue;
+      let matchedBy = '';
+      if (compactText.includes(compactCand)) {
+        matchedBy = candidate;
+      } else {
+        const synHit = termPool.find((syn) => {
+          const cs = syn.replace(/\s+/g, '').toLowerCase();
+          return cs.length >= 3 && cs !== compactCand && compactText.includes(cs) && candidate.includes(syn.slice(0, 2));
+        });
+        if (synHit) matchedBy = synHit;
+      }
+      if (matchedBy) {
+        const vocabKey = `${sup.fieldCode}:${candidate}`;
+        if (!seenVocabKeys.has(vocabKey)) {
+          seenVocabKeys.add(vocabKey);
+          vocabMatches.push({
+            vocabKey,
+            fieldCode: sup.fieldCode,
+            fieldName: sup.fieldName,
+            codeTable: sup.standardCode,
+            standardTerm: candidate,
+            matchedBy,
+            isPrimaryStandard: false,
+            isLinked: linkedVocabSet.has(vocabKey),
+          });
+        }
+      }
+    }
+  }
+
+  // 3. Scan current case entity list
+  const entityMatches: ViolationEntityMatch[] = [];
+  for (const ent of entities) {
+    if (ent.kind === 'ACC') continue;
+    const aliases = extractEntitySearchAliases(ent);
+    const idPattern = new RegExp(`(^|[^A-Za-z0-9])${ent.id}($|[^A-Za-z0-9])`, 'i');
+    let matchedAlias = '';
+    if (idPattern.test(combinedText)) {
+      matchedAlias = ent.id;
+    } else {
+      const foundAlias = aliases.find((alias) =>
+        compactText.includes(alias.replace(/\s+/g, '').toLowerCase()),
+      );
+      if (foundAlias) matchedAlias = foundAlias;
+    }
+
+    if (matchedAlias) {
+      const isCurrentSubject = item.subjectId === ent.id;
+      const isCurrentEvent = item.eventId === ent.id;
+      const isLinked =
+        isCurrentSubject || isCurrentEvent || linkedEntitySet.has(ent.id);
+      entityMatches.push({
+        entityId: ent.id,
+        entityKind: ent.kind,
+        entityLabel: ent.label,
+        matchedAlias,
+        isCurrentSubject,
+        isCurrentEvent,
+        isLinked,
+      });
+    }
+  }
+
+  const hasAnyMatch = vocabMatches.length > 0 || entityMatches.length > 0;
+  const hasUnlinkedMatch =
+    vocabMatches.some((m) => !m.isLinked) || entityMatches.some((m) => !m.isLinked);
+  const matchedParties = entityMatches.filter(
+    (m) => m.entityKind === 'P' || m.entityKind === 'O',
+  );
+  const hasSubjectMismatch =
+    matchedParties.length > 0 && !matchedParties.some((m) => m.isCurrentSubject);
+
+  const isConfirmed =
+    item.linkConsistencyConfirmed === true &&
+    (!item.linkConsistencyFingerprint || item.linkConsistencyFingerprint === fingerprint);
+  const needsConfirmationError = hasAnyMatch && !isConfirmed;
+
+  return {
+    vocabMatches,
+    entityMatches,
+    hasAnyMatch,
+    hasUnlinkedMatch,
+    hasSubjectMismatch,
+    isConfirmed,
+    needsConfirmationError,
+    fingerprint,
+  };
+}
+
+export function applyViolationVocabLink(
+  item: LegalConclusionItem,
+  match: ViolationVocabMatch,
+): LegalConclusionItem {
+  const nextVocab = Array.from(
+    new Set([...(item.linkedVocabTerms || []), match.vocabKey]),
+  );
+  return {
+    ...item,
+    conclusionLabel: match.isPrimaryStandard
+      ? match.standardTerm
+      : item.conclusionLabel,
+    linkedVocabTerms: nextVocab,
+    linkConsistencyConfirmed: false,
+    linkConsistencyFingerprint: '',
+  };
+}
+
+export function applyViolationEntityLink(
+  item: LegalConclusionItem,
+  match: ViolationEntityMatch,
+  mode: 'auto' | 'subject' | 'event' | 'related' = 'auto',
+): LegalConclusionItem {
+  if (mode === 'subject' && (match.entityKind === 'P' || match.entityKind === 'O')) {
+    return {
+      ...item,
+      subjectId: match.entityId,
+      linkConsistencyConfirmed: false,
+      linkConsistencyFingerprint: '',
+    };
+  }
+  if ((mode === 'event' || (mode === 'auto' && match.entityKind === 'E')) && match.entityKind === 'E') {
+    return {
+      ...item,
+      eventId: match.entityId,
+      linkedEntityIds: Array.from(
+        new Set([...(item.linkedEntityIds || []), match.entityId]),
+      ),
+      linkConsistencyConfirmed: false,
+      linkConsistencyFingerprint: '',
+    };
+  }
+  return {
+    ...item,
+    linkedEntityIds: Array.from(
+      new Set([...(item.linkedEntityIds || []), match.entityId]),
+    ),
+    linkConsistencyConfirmed: false,
+    linkConsistencyFingerprint: '',
+  };
+}
+
+export function applyAllViolationLinks(
+  item: LegalConclusionItem,
+  scan: ViolationLinkScanResult,
+): LegalConclusionItem {
+  let next: LegalConclusionItem = {
+    ...item,
+    linkedVocabTerms: Array.from(
+      new Set([
+        ...(item.linkedVocabTerms || []),
+        ...scan.vocabMatches.map((m) => m.vocabKey),
+      ]),
+    ),
+    linkedEntityIds: [...(item.linkedEntityIds || [])],
+    linkConsistencyConfirmed: false,
+    linkConsistencyFingerprint: '',
+  };
+
+  const primaryVocab = scan.vocabMatches.find((m) => m.isPrimaryStandard);
+  if (primaryVocab && (!next.conclusionLabel.trim() || !primaryVocab.isLinked)) {
+    next.conclusionLabel = primaryVocab.standardTerm;
+  }
+
+  const matchedParty = scan.entityMatches.find(
+    (m) => m.entityKind === 'P' || m.entityKind === 'O',
+  );
+  if (matchedParty && !next.subjectId) {
+    next.subjectId = matchedParty.entityId;
+  }
+
+  const matchedEvent = scan.entityMatches.find((m) => m.entityKind === 'E');
+  if (matchedEvent && !next.eventId) {
+    next.eventId = matchedEvent.entityId;
+  }
+
+  const extraEntityIds = scan.entityMatches
+    .filter((m) => m.entityId !== next.subjectId && m.entityId !== next.eventId)
+    .map((m) => m.entityId);
+
+  next.linkedEntityIds = Array.from(
+    new Set([...(next.linkedEntityIds || []), ...extraEntityIds]),
+  );
+
+  return next;
+}
+
+export function confirmViolationLinkConsistency(
+  item: LegalConclusionItem,
+): LegalConclusionItem {
+  return {
+    ...item,
+    linkConsistencyConfirmed: true,
+    linkConsistencyFingerprint: buildViolationConsistencyFingerprint(item),
+  };
+}
+
+
 
 

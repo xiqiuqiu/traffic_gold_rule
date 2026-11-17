@@ -41,6 +41,7 @@ import {
   validateRelation,
 } from '../utils/goldRules';
 import { ReviewLifecycleBar, getCardStatusBorderClass } from './ReviewLifecycleBar';
+import { ViolationLinkConsistencyBox } from './ViolationLinkConsistencyBox';
 
 interface FieldAnnotationPanelProps {
   caseDoc: CaseDocument;
@@ -140,8 +141,8 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
   );
 
   const bucketCounts = useMemo(
-    () => computeEntityWorkbenchStats(caseDoc, selectedEntity.id),
-    [caseDoc, selectedEntity.id],
+    () => computeEntityWorkbenchStats(caseDoc, selectedEntity.id, supplements),
+    [caseDoc, selectedEntity.id, supplements],
   );
 
   // Filtered ordinary fact fields for display
@@ -173,7 +174,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
       }
       const hasBlockingOrError =
         PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
-        validateLegalConclusion(item).some((i) => i.severity === 'error');
+        validateLegalConclusion(item, {
+          entities: caseDoc.entities,
+          supplements,
+        }).some((i) => i.severity === 'error');
       return matchesWorkItemStatus(
         {
           reviewStatus: item.reviewStatus,
@@ -184,7 +188,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
       );
     });
     return sortLegalConclusionsByChain(matched);
-  }, [caseDoc.legalConclusions, selectedEntity.id, selectedEntity.kind, groupFilter, statusBucket, searchQuery]);
+  }, [caseDoc.legalConclusions, caseDoc.entities, supplements, selectedEntity.id, selectedEntity.kind, groupFilter, statusBucket, searchQuery]);
 
   const filteredEventRelations = useMemo(() => {
     if (selectedEntity.kind !== 'E') return [];
@@ -924,6 +928,13 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       ...(cat !== 'liability'
                         ? { causalLinkStatus: 'unspecified' as CausalLinkStatus, linkedViolationIds: [] }
                         : { linkedCauseIds: [] }),
+                      ...(cat === 'violation'
+                        ? {
+                            linkedEntityIds: [],
+                            linkedVocabTerms: [],
+                            linkConsistencyConfirmed: false,
+                          }
+                        : {}),
                       evidences: selectedPdfQuote
                         ? [
                             {
@@ -970,7 +981,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       : item.category === 'cause'
                         ? '认定原因 (D10.F059)'
                         : '责任划分 (D10.F060)';
-                  const legalIssues = validateLegalConclusion(item);
+                  const legalIssues = validateLegalConclusion(item, {
+                    entities: caseDoc.entities,
+                    supplements,
+                  });
                   const legalHasErr =
                     PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
                     legalIssues.some((i) => i.severity === 'error');
@@ -989,6 +1003,15 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                     item.category === 'violation'
                       ? allCauses.filter((c) => (c.linkedViolationIds || []).includes(item.id))
                       : [];
+                  const saveEditedLegal = (patch: Partial<LegalConclusionItem>) => {
+                    onSaveLegalItem({
+                      ...item,
+                      ...patch,
+                      ...(item.category === 'violation'
+                        ? { linkConsistencyConfirmed: false, linkConsistencyFingerprint: '' }
+                        : {}),
+                    });
+                  };
                   const handleCreateLinkedViolation = () => {
                     const newVioId = `VIO-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
                     const newVio: LegalConclusionItem = {
@@ -1002,6 +1025,9 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       conclusionLabel: '',
                       causalLinkStatus: 'explicit_linked',
                       linkedViolationIds: [],
+                      linkedEntityIds: [],
+                      linkedVocabTerms: [],
+                      linkConsistencyConfirmed: false,
                       evidences: selectedPdfQuote
                         ? [
                             {
@@ -1114,9 +1140,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           </label>
                           <select
                             value={item.eventId}
-                            onChange={(e) =>
-                              onSaveLegalItem({ ...item, eventId: e.target.value })
-                            }
+                            onChange={(e) => saveEditedLegal({ eventId: e.target.value })}
                             className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
                           >
                             <option value="">整起事故 (ACC)</option>
@@ -1134,8 +1158,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           <select
                             value={item.presenceStatus}
                             onChange={(e) =>
-                              onSaveLegalItem({
-                                ...item,
+                              saveEditedLegal({
                                 presenceStatus: e.target.value as PresenceStatus,
                               })
                             }
@@ -1156,7 +1179,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                             type="text"
                             value={item.conclusionLabel}
                             onChange={(e) =>
-                              onSaveLegalItem({ ...item, conclusionLabel: e.target.value })
+                              saveEditedLegal({ conclusionLabel: e.target.value })
                             }
                             placeholder={
                               item.category === 'liability'
@@ -1380,7 +1403,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                             type="text"
                             value={item.lawArticle}
                             onChange={(e) =>
-                              onSaveLegalItem({ ...item, lawArticle: e.target.value })
+                              saveEditedLegal({ lawArticle: e.target.value })
                             }
                             className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
                           />
@@ -1395,11 +1418,25 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           rows={2}
                           value={item.rawText}
                           onChange={(e) =>
-                            onSaveLegalItem({ ...item, rawText: e.target.value })
+                            saveEditedLegal({ rawText: e.target.value })
+                          }
+                          placeholder={
+                            item.category === 'violation'
+                              ? '按文书原文录入违法行为；系统将自动扫描受控词表与案件实体…'
+                              : '按文书表达完整摘记，不得改变否定词或责任限定语…'
                           }
                           className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
                         />
                       </div>
+
+                      {item.category === 'violation' && (
+                        <ViolationLinkConsistencyBox
+                          item={item}
+                          entities={caseDoc.entities}
+                          supplements={supplements}
+                          onUpdateItem={onSaveLegalItem}
+                        />
+                      )}
 
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <div className="flex flex-wrap items-center gap-1.5">

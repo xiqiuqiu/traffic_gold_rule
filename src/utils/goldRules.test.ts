@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyAllViolationLinks,
+  applyViolationEntityLink,
+  applyViolationVocabLink,
   buildGoldExportPayload,
   buildGoldV02ExportPayload,
   cleanSelectedPdfQuote,
@@ -8,17 +11,24 @@ import {
   computeCaseReadiness,
   computeEntityProgressMap,
   computeEntityWorkbenchStats,
+  confirmViolationLinkConsistency,
   deriveTimeBucket,
+  extractPdfParagraphMatches,
   filterWorkItems,
+  findTextMatchRanges,
   generateNextEntityId,
   maskPiiText,
   matchesFieldRecordBucket,
+  normalizePdfTextForDisplay,
+  scanViolationLinkMatches,
   sortLegalConclusionsByChain,
+  splitPdfPageIntoParagraphs,
+  traceLegalEvidenceChain,
   validateFieldRecord,
   validateLegalConclusion,
 } from './goldRules';
 import { CaseDocument, FieldRecord, LegalConclusionItem } from '../types/gold';
-import { MASTER_FIELD_SCHEMA } from '../data/schemaCatalog';
+import { INITIAL_VOCABULARY_SUPPLEMENTS, MASTER_FIELD_SCHEMA } from '../data/schemaCatalog';
 import { SEED_CASES } from '../data/seedCases';
 
 test('generateNextEntityId follows ACC and two-digit prefix conventions', () => {
@@ -404,5 +414,270 @@ test('all seed cases maintain grounded VIO -> CAU -> LIA chains without missing 
     }
   }
 });
+
+test('normalizePdfTextForDisplay and splitPdfPageIntoParagraphs clean CJK justified spacing and preserve logical sections', () => {
+  const rawPage = [
+    '道路交通事故认定书',
+    '一、基本情况',
+    '张晓峰 驾驶 机 动 车行 经 人行横道 未 减速 礼让 行人 李桂英。',
+    '【事故原因分析】 张晓峰负全部原因。',
+    '二、责任认定',
+    '认定当事人张晓峰承担本起道路交通事故的全部责任，李桂英无责任。',
+  ].join('\n');
+
+  assert.equal(
+    normalizePdfTextForDisplay('张晓峰驾驶机 动 车行 经 人行横道'),
+    '张晓峰驾驶机动车行经人行横道',
+  );
+
+  const paragraphs = splitPdfPageIntoParagraphs(rawPage);
+  assert.ok(paragraphs.length >= 4);
+  assert.ok(paragraphs.some((p) => p.includes('张晓峰驾驶机动车行经人行横道未减速礼让行人李桂英')));
+  assert.ok(paragraphs.some((p) => p.includes('认定当事人张晓峰承担本起道路交通事故的全部责任')));
+});
+
+test('findTextMatchRanges matches CJK spaced quotes and ellipsis segments accurately', () => {
+  const display = '张晓峰驾驶机动车行经人行横道未减速礼让行人，依据《中华人民共和国道路交通安全法》第四十七条第一款承担全部责任。';
+  const ranges = findTextMatchRanges(display, [
+    '张晓峰驾驶机 动 车行 经 人行横道...第四十七条第一款',
+  ]);
+  assert.equal(ranges.length, 2);
+  assert.equal(display.slice(ranges[0].start, ranges[0].end), '张晓峰驾驶机动车行经人行横道');
+  assert.equal(display.slice(ranges[1].start, ranges[1].end), '第四十七条第一款');
+});
+
+test('traceLegalEvidenceChain traces VIO <-> CAU <-> LIA links, subjects, party records, and consistency checks', () => {
+  const case06 = SEED_CASES[1];
+  const vio06 = case06.legalConclusions.find((l) => l.category === 'violation');
+  assert.ok(vio06);
+
+  const chainFromVio = traceLegalEvidenceChain(case06, vio06.id);
+  assert.ok(chainFromVio);
+  assert.equal(chainFromVio.violations.length, 1);
+  assert.ok(chainFromVio.causes.length >= 1);
+  assert.ok(chainFromVio.liabilities.length >= 1);
+  assert.ok(chainFromVio.subjectIds.includes(vio06.subjectId));
+  assert.ok(chainFromVio.partyFieldRecords.every((r) => chainFromVio.subjectIds.includes(r.entityId)));
+  assert.ok(chainFromVio.evidences.length >= 3);
+  assert.equal(
+    chainFromVio.consistencyChecks.some((c) => c.code === 'CHAIN_COMPLETE_AND_CONSISTENT'),
+    true,
+  );
+
+  // Explicit no-fault liability in CASE-06 should pass without cause warning
+  const noFaultLia = case06.legalConclusions.find(
+    (l) => l.category === 'liability' && l.conclusionLabel === '无责任',
+  );
+  if (noFaultLia) {
+    const noFaultChain = traceLegalEvidenceChain(case06, noFaultLia.id);
+    assert.ok(noFaultChain);
+    assert.equal(
+      noFaultChain.consistencyChecks.some((c) => c.code === 'NO_FAULT_LIABILITY_EXEMPT'),
+      true,
+    );
+  }
+
+  // Missing link / missing evidence detection
+  const brokenCase = structuredClone(case06);
+  const targetLia = brokenCase.legalConclusions.find(
+    (l) => l.category === 'liability' && l.conclusionLabel !== '无责任',
+  );
+  assert.ok(targetLia);
+  targetLia.linkedCauseIds = [];
+  targetLia.evidences = [];
+  const brokenChain = traceLegalEvidenceChain(brokenCase, targetLia.id);
+  assert.ok(brokenChain);
+  assert.equal(
+    brokenChain.consistencyChecks.some(
+      (c) => c.code === 'LIABILITY_MISSING_CAUSE_LINK' && c.severity === 'warning',
+    ),
+    true,
+  );
+  assert.equal(
+    brokenChain.consistencyChecks.some(
+      (c) => c.code === 'CHAIN_NODE_MISSING_EVIDENCE' && c.severity === 'error',
+    ),
+    true,
+  );
+});
+
+test('extractPdfParagraphMatches links chain evidences to matching extracted PDF paragraphs', () => {
+  const case06 = SEED_CASES[1];
+  const vio06 = case06.legalConclusions.find((l) => l.category === 'violation');
+  assert.ok(vio06);
+  const chain = traceLegalEvidenceChain(case06, vio06.id);
+  assert.ok(chain);
+
+  const firstEv = chain.evidences[0];
+  assert.ok(firstEv);
+  const pageTexts: Record<number, string> = {
+    [firstEv.page]: `一、事故基本事实\n无关背景描述段落。\n${firstEv.quote.split('').join(' ')}`,
+  };
+  const matches = extractPdfParagraphMatches(pageTexts, chain.evidences);
+  const hitParagraphs = matches.filter((m) => m.matchedEvidences.length > 0);
+  assert.equal(hitParagraphs.length, 1);
+  assert.equal(hitParagraphs[0].page, firstEv.page);
+});
+
+test('scanViolationLinkMatches scans D10.F058 controlled vocab, supplements, and case entities and blocks until confirmed', () => {
+  const case06 = structuredClone(SEED_CASES[1]);
+  const newVio: LegalConclusionItem = {
+    id: 'VIO-NEW-1',
+    category: 'violation',
+    subjectId: 'P01',
+    eventId: '',
+    presenceStatus: 'present',
+    rawText: '张晓峰驾驶赣A5M821行经人行横道未减速行驶且未停车让行',
+    lawArticle: '',
+    conclusionLabel: '',
+    causalLinkStatus: 'unspecified',
+    linkedViolationIds: [],
+    linkedEntityIds: [],
+    linkedVocabTerms: [],
+    linkConsistencyConfirmed: false,
+    evidences: [{ id: 'EV-NEW-1', page: 1, quote: '行经人行横道未减速行驶且未停车让行' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+
+  const scan = scanViolationLinkMatches(
+    newVio,
+    case06.entities,
+    INITIAL_VOCABULARY_SUPPLEMENTS,
+  );
+  assert.equal(scan.hasAnyMatch, true);
+  assert.equal(scan.needsConfirmationError, true);
+  assert.ok(
+    scan.vocabMatches.some(
+      (m) => m.fieldCode === 'D10.F058' && m.standardTerm === '行经人行横道未停车让行',
+    ),
+  );
+  assert.ok(
+    scan.vocabMatches.some(
+      (m) => m.fieldCode === 'D05.F027' && m.standardTerm === '未减速行驶',
+    ),
+  );
+  assert.ok(
+    scan.vocabMatches.some(
+      (m) => m.fieldCode === 'D05.F075' && m.standardTerm === '人行横道',
+    ),
+  );
+  assert.ok(scan.entityMatches.some((e) => e.entityId === 'P01' && e.isCurrentSubject));
+  assert.ok(scan.entityMatches.some((e) => e.entityId === 'V01'));
+  assert.ok(scan.entityMatches.some((e) => e.entityId === 'R01'));
+  assert.equal(scan.entityMatches.some((e) => e.entityId === 'ACC'), false);
+
+  // Validation must return red error before confirmation
+  const unconfirmedIssues = validateLegalConclusion(newVio, {
+    entities: case06.entities,
+    supplements: INITIAL_VOCABULARY_SUPPLEMENTS,
+  });
+  assert.equal(
+    unconfirmedIssues.some(
+      (i) => i.code === 'VIOLATION_LINK_CONSISTENCY_UNCONFIRMED' && i.severity === 'error',
+    ),
+    true,
+  );
+
+  // Readiness and entity workbench stats must count the blocking error
+  const baselineStats = computeEntityWorkbenchStats(case06, 'P01', INITIAL_VOCABULARY_SUPPLEMENTS);
+  const withNewVio = structuredClone(case06);
+  withNewVio.legalConclusions.push(newVio);
+  const newStats = computeEntityWorkbenchStats(withNewVio, 'P01', INITIAL_VOCABULARY_SUPPLEMENTS);
+  assert.equal(newStats.blocking_or_error, baselineStats.blocking_or_error + 1);
+
+  // One-click apply all populates standard conclusion and entity/vocab links, but keeps error until confirmed
+  const linked = applyAllViolationLinks(newVio, scan);
+  assert.equal(linked.conclusionLabel, '行经人行横道未停车让行');
+  assert.ok((linked.linkedEntityIds || []).includes('V01'));
+  assert.ok((linked.linkedEntityIds || []).includes('R01'));
+  assert.equal(linked.linkConsistencyConfirmed, false);
+  const stillUnconfirmed = validateLegalConclusion(linked, {
+    entities: case06.entities,
+    supplements: INITIAL_VOCABULARY_SUPPLEMENTS,
+  });
+  assert.equal(
+    stillUnconfirmed.some((i) => i.code === 'VIOLATION_LINK_CONSISTENCY_UNCONFIRMED'),
+    true,
+  );
+
+  // Confirming clears the red error and drops blocking_or_error count back to baseline
+  const confirmed = confirmViolationLinkConsistency(linked);
+  const afterConfirmIssues = validateLegalConclusion(confirmed, {
+    entities: case06.entities,
+    supplements: INITIAL_VOCABULARY_SUPPLEMENTS,
+  });
+  assert.equal(
+    afterConfirmIssues.some((i) => i.code === 'VIOLATION_LINK_CONSISTENCY_UNCONFIRMED'),
+    false,
+  );
+  const withConfirmedVio = structuredClone(case06);
+  withConfirmedVio.legalConclusions.push(confirmed);
+  const confirmedStats = computeEntityWorkbenchStats(
+    withConfirmedVio,
+    'P01',
+    INITIAL_VOCABULARY_SUPPLEMENTS,
+  );
+  assert.equal(confirmedStats.blocking_or_error, baselineStats.blocking_or_error);
+
+  // Editing rawText after confirmation invalidates fingerprint & re-triggers consistency error
+  const editedAfterConfirm: LegalConclusionItem = {
+    ...confirmed,
+    rawText: `${confirmed.rawText}（补充超速行驶描述）`,
+  };
+  const retriggered = validateLegalConclusion(editedAfterConfirm, {
+    entities: case06.entities,
+    supplements: INITIAL_VOCABULARY_SUPPLEMENTS,
+  });
+  assert.equal(
+    retriggered.some((i) => i.code === 'VIOLATION_LINK_CONSISTENCY_UNCONFIRMED'),
+    true,
+  );
+});
+
+test('applyViolationVocabLink and applyViolationEntityLink update fields deterministically without premature confirmation', () => {
+  const case06 = structuredClone(SEED_CASES[1]);
+  const baseVio: LegalConclusionItem = {
+    id: 'VIO-SINGLE-1',
+    category: 'violation',
+    subjectId: 'P02',
+    eventId: '',
+    presenceStatus: 'present',
+    rawText: '张晓峰在第一阶段行经人行横道未减速行驶',
+    lawArticle: '',
+    conclusionLabel: '',
+    evidences: [{ id: 'EV-S1', page: 1, quote: '行经人行横道未减速行驶' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+
+  const scan = scanViolationLinkMatches(
+    baseVio,
+    case06.entities,
+    INITIAL_VOCABULARY_SUPPLEMENTS,
+  );
+  const primaryMatch = scan.vocabMatches.find((m) => m.isPrimaryStandard);
+  assert.ok(primaryMatch);
+  const afterVocab = applyViolationVocabLink(baseVio, primaryMatch);
+  assert.equal(afterVocab.conclusionLabel, '行经人行横道未停车让行');
+  assert.ok((afterVocab.linkedVocabTerms || []).includes(primaryMatch.vocabKey));
+  assert.equal(afterVocab.linkConsistencyConfirmed, false);
+
+  const p01Match = scan.entityMatches.find((e) => e.entityId === 'P01');
+  assert.ok(p01Match);
+  const afterSubject = applyViolationEntityLink(afterVocab, p01Match, 'subject');
+  assert.equal(afterSubject.subjectId, 'P01');
+  assert.equal(afterSubject.linkConsistencyConfirmed, false);
+
+  const e01Match = scan.entityMatches.find((e) => e.entityKind === 'E');
+  if (e01Match) {
+    const afterEvent = applyViolationEntityLink(afterSubject, e01Match, 'event');
+    assert.equal(afterEvent.eventId, e01Match.entityId);
+  }
+});
+
+
 
 

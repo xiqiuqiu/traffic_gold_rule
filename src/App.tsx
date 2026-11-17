@@ -84,9 +84,13 @@ export default function App() {
     nonce: number;
   } | null>(null);
   const [legalFocusRequest, setLegalFocusRequest] = useState<{
-    subTab: 'legal' | 'relations';
+    subTab: 'legal' | 'evidence_chain' | 'relations';
     nonce: number;
   } | null>(null);
+  const [pdfPageTexts, setPdfPageTexts] = useState<Record<number, string>>({});
+  const [highlightedEvidences, setHighlightedEvidences] = useState<
+    Array<{ page: number; quote: string; label?: string }>
+  >([]);
   const [manualOpen, setManualOpen] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -124,7 +128,14 @@ export default function App() {
     setSelectedPdfQuote(null);
     setFocusedFieldKey(null);
     setFocusedLegalOrRelId(null);
+    setHighlightedEvidences([]);
   }, [activeCaseId]);
+
+  useEffect(() => {
+    if (activeTab !== 'legal') {
+      setHighlightedEvidences([]);
+    }
+  }, [activeTab]);
 
   const selectedEntity = useMemo(
     () =>
@@ -133,11 +144,11 @@ export default function App() {
     [activeCase, selectedEntityId],
   );
 
-  const readiness = useMemo(() => computeCaseReadiness(activeCase), [activeCase]);
-  const entityProgressMap = useMemo(() => computeEntityProgressMap(activeCase), [activeCase]);
+  const readiness = useMemo(() => computeCaseReadiness(activeCase, supplements), [activeCase, supplements]);
+  const entityProgressMap = useMemo(() => computeEntityProgressMap(activeCase, supplements), [activeCase, supplements]);
   const pendingItemsCount = useMemo(
-    () => collectCaseWorkItems(activeCase).filter((item) => item.needsAttention).length,
-    [activeCase],
+    () => collectCaseWorkItems(activeCase, supplements).filter((item) => item.needsAttention).length,
+    [activeCase, supplements],
   );
 
   const recordCountByEntity = useMemo(() => {
@@ -690,6 +701,8 @@ export default function App() {
                 updateActiveCase((prev) => ({ ...prev, pageCount: count }));
               }
             }}
+            onPageTextsExtracted={setPdfPageTexts}
+            highlightedEvidences={activeTab === 'legal' ? highlightedEvidences : []}
             selectedQuote={selectedPdfQuote}
             onSelectQuote={setSelectedPdfQuote}
             activeTargetLabel={activeTargetInfo?.label || null}
@@ -763,10 +776,20 @@ export default function App() {
             <LegalRelationsPanel
               caseDoc={activeCase}
               userRole={userRole}
+              supplements={supplements}
               selectedPdfQuote={selectedPdfQuote}
+              pdfPageTexts={pdfPageTexts}
               activeTargetId={focusedLegalOrRelId?.id || null}
               onFocusTarget={(id, label) => setFocusedLegalOrRelId({ id, label })}
               onJumpToPage={(page) => setCurrentPdfPage(page)}
+              onHighlightEvidences={setHighlightedEvidences}
+              onJumpToEntityField={(entityId, fieldCode) => {
+                setActiveTab('fields');
+                setSelectedEntityId(entityId);
+                setFocusedLegalOrRelId(null);
+                setFocusedFieldKey(fieldCode ? `${entityId}:${fieldCode}` : null);
+                setFieldBucketRequest({ bucket: 'all', nonce: Date.now() });
+              }}
               onSaveLegalItem={handleSaveLegalItem}
               onDeleteLegalItem={handleDeleteLegalItem}
               onSaveRelationItem={handleSaveRelationItem}
@@ -791,6 +814,7 @@ export default function App() {
               caseDoc={activeCase}
               allCases={cases}
               userRole={userRole}
+              supplements={supplements}
               statusFilter={queueStatusFilter}
               onStatusFilterChange={setQueueStatusFilter}
               onJumpToItem={handleJumpToWorkItem}

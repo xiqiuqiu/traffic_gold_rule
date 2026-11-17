@@ -101,6 +101,10 @@ export interface LegalConclusionItem {
   causalLinkStatus?: CausalLinkStatus;
   linkedViolationIds?: string[];
   linkedCauseIds?: string[];
+  linkedEntityIds?: string[];
+  linkedVocabTerms?: string[];
+  linkConsistencyConfirmed?: boolean;
+  linkConsistencyFingerprint?: string;
   evidences: EvidenceItem[];
   reviewStatus: ReviewStatus;
   disputeReason: string;
@@ -221,4 +225,74 @@ export interface EntityProgressSummary {
   applicableTotalCount: number;
   applicableUnstartedCount: number;
 }
+
+export interface ChainConsistencyCheck {
+  code: string;
+  severity: 'pass' | 'warning' | 'error';
+  message: string;
+}
+
+export interface ChainEvidenceEntry {
+  id: string;
+  sourceId: string;
+  sourceKind: 'violation' | 'cause' | 'liability' | 'field' | 'relation';
+  sourceLabel: string;
+  subjectId: string;
+  page: number;
+  quote: string;
+}
+
+export interface LegalEvidenceChain {
+  anchorItem: LegalConclusionItem;
+  violations: LegalConclusionItem[];
+  causes: LegalConclusionItem[];
+  liabilities: LegalConclusionItem[];
+  subjectIds: string[];
+  subjects: EntityItem[];
+  partyFieldRecords: FieldRecord[];
+  relatedRelations: EventRelationItem[];
+  evidences: ChainEvidenceEntry[];
+  consistencyChecks: ChainConsistencyCheck[];
+}
+
+export interface MatchedPdfParagraph {
+  page: number;
+  paragraphIndex: number;
+  text: string;
+  matchedEvidences: ChainEvidenceEntry[];
+}
+
+export interface ViolationVocabMatch {
+  vocabKey: string;
+  fieldCode: string;
+  fieldName: string;
+  codeTable: string;
+  standardTerm: string;
+  matchedBy: string;
+  isPrimaryStandard: boolean;
+  isLinked: boolean;
+}
+
+export interface ViolationEntityMatch {
+  entityId: string;
+  entityKind: EntityKind;
+  entityLabel: string;
+  matchedAlias: string;
+  isCurrentSubject: boolean;
+  isCurrentEvent: boolean;
+  isLinked: boolean;
+}
+
+export interface ViolationLinkScanResult {
+  vocabMatches: ViolationVocabMatch[];
+  entityMatches: ViolationEntityMatch[];
+  hasAnyMatch: boolean;
+  hasUnlinkedMatch: boolean;
+  hasSubjectMismatch: boolean;
+  isConfirmed: boolean;
+  needsConfirmationError: boolean;
+  fingerprint: string;
+}
+
+
 

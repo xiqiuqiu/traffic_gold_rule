@@ -49,3 +49,9 @@
   background: rgba(29, 78, 216, 0.25);
   color: transparent;
 }
+
+.pdf-text-layer span.pdf-evidence-match {
+  background-color: rgba(251, 191, 36, 0.34);
+  border-bottom: 1.5px solid rgba(217, 119, 6, 0.72);
+  border-radius: 2px;
+}

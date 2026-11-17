@@ -441,6 +441,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-01',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P01',
         eventId: 'E01',
         presenceStatus: 'present',
@@ -592,6 +593,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-06-1',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P01',
         eventId: 'E01',
         presenceStatus: 'present',
@@ -662,6 +664,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-06-2',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P02',
         eventId: 'E01',
         presenceStatus: 'explicit_negative',
@@ -761,6 +764,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-08-1',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P01',
         eventId: 'E01',
         presenceStatus: 'present',
@@ -826,6 +830,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-08-2',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P02',
         eventId: 'E01',
         presenceStatus: 'explicit_negative',
@@ -934,6 +939,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-13-1',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P01',
         eventId: 'E01',
         presenceStatus: 'present',
@@ -996,6 +1002,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-13-2',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P03',
         eventId: 'E02',
         presenceStatus: 'present',
@@ -1057,6 +1064,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-13-3',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P04',
         eventId: 'E03',
         presenceStatus: 'present',
@@ -1118,6 +1126,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-13-4',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P02',
         eventId: 'E01',
         presenceStatus: 'explicit_negative',
@@ -1255,6 +1264,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-19-1',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P01',
         eventId: 'E01',
         presenceStatus: 'present',
@@ -1322,6 +1332,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-19-2',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P05',
         eventId: 'E02',
         presenceStatus: 'present',
@@ -1387,6 +1398,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-19-3',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P02',
         eventId: 'E01',
         presenceStatus: 'explicit_negative',
@@ -1424,6 +1436,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-19-4',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P03',
         eventId: 'E01',
         presenceStatus: 'explicit_negative',
@@ -1461,6 +1474,7 @@ export const SEED_CASES: CaseDocument[] = [
       {
         id: 'VIO-19-5',
         category: 'violation',
+        linkConsistencyConfirmed: true,
         subjectId: 'P04',
         eventId: 'E01',
         presenceStatus: 'explicit_negative',

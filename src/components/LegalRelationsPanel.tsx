@@ -1,6 +1,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, ArrowRight, Check, Link2, Plus, Trash2, XCircle } from 'lucide-react';
-import { PRESENCE_STATUS_META } from '../data/schemaCatalog';
+import {
+  AlertTriangle,
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  ExternalLink,
+  FileSearch,
+  GitBranch,
+  Link2,
+  Plus,
+  Trash2,
+  XCircle,
+} from 'lucide-react';
+import {
+  INITIAL_VOCABULARY_SUPPLEMENTS,
+  MASTER_FIELD_SCHEMA,
+  PRESENCE_STATUS_META,
+  REVIEW_STATUS_META,
+} from '../data/schemaCatalog';
 import {
   CaseDocument,
   CausalLinkStatus,
@@ -9,30 +26,70 @@ import {
   LegalConclusionItem,
   PresenceStatus,
   UserRole,
+  VocabularySupplementItem,
   WorkItemFilterStatus,
 } from '../types/gold';
 import {
   cleanRelationEntityId,
+  extractPdfParagraphMatches,
+  findTextMatchRanges,
   matchesWorkItemStatus,
   sortLegalConclusionsByChain,
+  traceLegalEvidenceChain,
   validateLegalConclusion,
   validateRelation,
 } from '../utils/goldRules';
 import { ReviewLifecycleBar, getCardStatusBorderClass } from './ReviewLifecycleBar';
+import { ViolationLinkConsistencyBox } from './ViolationLinkConsistencyBox';
+
+interface HighlightedEvidenceInput {
+  page: number;
+  quote: string;
+  label?: string;
+}
 
 interface LegalRelationsPanelProps {
   caseDoc: CaseDocument;
   userRole: UserRole;
+  supplements?: VocabularySupplementItem[];
   selectedPdfQuote: { page: number; quote: string } | null;
+  pdfPageTexts?: Record<number, string>;
   activeTargetId: string | null;
   onFocusTarget: (id: string, label: string) => void;
   onJumpToPage: (page: number) => void;
+  onHighlightEvidences?: (items: HighlightedEvidenceInput[]) => void;
+  onJumpToEntityField?: (entityId: string, fieldCode?: string) => void;
   onSaveLegalItem: (item: LegalConclusionItem, auditNote?: string) => void;
   onDeleteLegalItem: (id: string) => void;
   onSaveRelationItem: (item: EventRelationItem, auditNote?: string) => void;
   onDeleteRelationItem: (id: string) => void;
-  externalFocusRequest?: { subTab: 'legal' | 'relations'; nonce: number } | null;
+  externalFocusRequest?: { subTab: 'legal' | 'evidence_chain' | 'relations'; nonce: number } | null;
 }
+
+const HighlightedQuoteText: React.FC<{ text: string; quotes: string[] }> = ({ text, quotes }) => {
+  const ranges = useMemo(() => findTextMatchRanges(text, quotes), [text, quotes]);
+  if (ranges.length === 0) return <>{text}</>;
+  const parts: React.ReactNode[] = [];
+  let cursor = 0;
+  ranges.forEach((r, idx) => {
+    if (r.start > cursor) {
+      parts.push(<React.Fragment key={`t-${idx}`}>{text.slice(cursor, r.start)}</React.Fragment>);
+    }
+    parts.push(
+      <mark
+        key={`m-${idx}`}
+        className="rounded-xs bg-amber-200/80 px-0.5 font-medium text-slate-950"
+      >
+        {text.slice(r.start, r.end)}
+      </mark>,
+    );
+    cursor = r.end;
+  });
+  if (cursor < text.length) {
+    parts.push(<React.Fragment key="tail">{text.slice(cursor)}</React.Fragment>);
+  }
+  return <>{parts}</>;
+};
 
 const CATEGORY_LABELS: Record<LegalCategory, { title: string; fieldCode: string; hint: string }> = {
   violation: {
@@ -68,19 +125,25 @@ const RELATION_FIELD_CODES = [
 export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   caseDoc,
   userRole,
+  supplements = INITIAL_VOCABULARY_SUPPLEMENTS,
   selectedPdfQuote,
+  pdfPageTexts = {},
   activeTargetId,
   onFocusTarget,
   onJumpToPage,
+  onHighlightEvidences,
+  onJumpToEntityField,
   onSaveLegalItem,
   onDeleteLegalItem,
   onSaveRelationItem,
   onDeleteRelationItem,
   externalFocusRequest,
 }) => {
-  const [subTab, setSubTab] = useState<'legal' | 'relations'>('legal');
+  const [subTab, setSubTab] = useState<'legal' | 'evidence_chain' | 'relations'>('legal');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | LegalCategory>('ALL');
   const [statusFilter, setStatusFilter] = useState<WorkItemFilterStatus>('all');
+  const [selectedChainId, setSelectedChainId] = useState<string | null>(null);
+  const [showAllParagraphs, setShowAllParagraphs] = useState<boolean>(false);
 
   useEffect(() => {
     if (externalFocusRequest) {
@@ -105,6 +168,81 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
   const violationRecords = caseDoc.legalConclusions.filter((l) => l.category === 'violation');
   const causeRecords = caseDoc.legalConclusions.filter((l) => l.category === 'cause');
+  const liabilityRecords = caseDoc.legalConclusions.filter((l) => l.category === 'liability');
+
+  const schemaNameByCode = useMemo(
+    () => new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f.fieldName])),
+    [],
+  );
+
+  // Keep a valid default anchor when in Evidence Chain view or switching cases
+  const resolvedChainAnchorId = useMemo(() => {
+    if (
+      selectedChainId &&
+      caseDoc.legalConclusions.some((l) => l.id === selectedChainId)
+    ) {
+      return selectedChainId;
+    }
+    return (
+      violationRecords[0]?.id ||
+      liabilityRecords[0]?.id ||
+      caseDoc.legalConclusions[0]?.id ||
+      null
+    );
+  }, [selectedChainId, caseDoc.legalConclusions, violationRecords, liabilityRecords]);
+
+  const activeChain = useMemo(
+    () =>
+      resolvedChainAnchorId
+        ? traceLegalEvidenceChain(caseDoc, resolvedChainAnchorId)
+        : null,
+    [caseDoc, resolvedChainAnchorId],
+  );
+
+  useEffect(() => {
+    if (subTab === 'evidence_chain' && activeChain) {
+      onHighlightEvidences?.(
+        activeChain.evidences.map((ev) => ({
+          page: ev.page,
+          quote: ev.quote,
+          label: ev.sourceLabel,
+        })),
+      );
+    } else {
+      onHighlightEvidences?.([]);
+    }
+  }, [subTab, activeChain, onHighlightEvidences]);
+
+  useEffect(() => {
+    return () => {
+      onHighlightEvidences?.([]);
+    };
+  }, [onHighlightEvidences]);
+
+  const matchedParagraphs = useMemo(() => {
+    if (!activeChain) return [];
+    return extractPdfParagraphMatches(pdfPageTexts, activeChain.evidences);
+  }, [pdfPageTexts, activeChain]);
+
+  const visibleParagraphs = useMemo(() => {
+    const hits = matchedParagraphs.filter((p) => p.matchedEvidences.length > 0);
+    if (showAllParagraphs) return matchedParagraphs;
+    return hits;
+  }, [matchedParagraphs, showAllParagraphs]);
+
+  const handleSelectChainAnchor = (item: LegalConclusionItem, switchToChainTab = false) => {
+    setSelectedChainId(item.id);
+    if (switchToChainTab) {
+      setSubTab('evidence_chain');
+    }
+    const catMeta = CATEGORY_LABELS[item.category];
+    onFocusTarget(item.id, `${catMeta.title} (${item.id})`);
+    const chain = traceLegalEvidenceChain(caseDoc, item.id);
+    const firstPage = chain?.evidences[0]?.page || item.evidences[0]?.page;
+    if (firstPage && firstPage >= 1) {
+      onJumpToPage(firstPage);
+    }
+  };
 
   const handleAddLegal = (category: LegalCategory) => {
     const newItem: LegalConclusionItem = {
@@ -119,6 +257,9 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
       ...(category !== 'liability'
         ? { causalLinkStatus: 'unspecified' as CausalLinkStatus, linkedViolationIds: [] }
         : { linkedCauseIds: [] }),
+      ...(category === 'violation'
+        ? { linkedEntityIds: [], linkedVocabTerms: [], linkConsistencyConfirmed: false }
+        : {}),
       evidences: selectedPdfQuote
         ? [{ id: `EV-${Date.now().toString(36)}`, page: selectedPdfQuote.page, quote: selectedPdfQuote.quote }]
         : [],
@@ -176,7 +317,10 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
     for (const item of categoryFilteredLegal) {
       const hasBlockingOrError =
         PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
-        validateLegalConclusion(item).some((i) => i.severity === 'error');
+        validateLegalConclusion(item, {
+          entities: caseDoc.entities,
+          supplements,
+        }).some((i) => i.severity === 'error');
       const arg = {
         reviewStatus: item.reviewStatus,
         presenceStatus: item.presenceStatus,
@@ -190,7 +334,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
       if (matchesWorkItemStatus(arg, 'specialist_review')) counts.specialist_review += 1;
     }
     return counts;
-  }, [categoryFilteredLegal]);
+  }, [categoryFilteredLegal, caseDoc.entities, supplements]);
 
   const filteredLegal = useMemo(
     () =>
@@ -198,7 +342,10 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
         categoryFilteredLegal.filter((item) => {
           const hasBlockingOrError =
             PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
-            validateLegalConclusion(item).some((i) => i.severity === 'error');
+            validateLegalConclusion(item, {
+              entities: caseDoc.entities,
+              supplements,
+            }).some((i) => i.severity === 'error');
           return matchesWorkItemStatus(
             {
               reviewStatus: item.reviewStatus,
@@ -209,7 +356,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
           );
         }),
       ),
-    [categoryFilteredLegal, statusFilter],
+    [categoryFilteredLegal, statusFilter, caseDoc.entities, supplements],
   );
 
   const relationStatusCounts = useMemo(() => {
@@ -280,6 +427,18 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
           </button>
           <button
             type="button"
+            onClick={() => setSubTab('evidence_chain')}
+            className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-3 py-1.5 text-xs font-medium transition-colors ${
+              subTab === 'evidence_chain'
+                ? 'bg-white text-slate-900 shadow-xs'
+                : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
+            证据链视图
+          </button>
+          <button
+            type="button"
             onClick={() => setSubTab('relations')}
             className={`whitespace-nowrap rounded px-3 py-1.5 text-xs font-medium transition-colors ${
               subTab === 'relations' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
@@ -303,7 +462,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               </button>
             ))}
           </div>
-        ) : (
+        ) : subTab === 'relations' ? (
           <button
             type="button"
             onClick={handleAddRelation}
@@ -312,6 +471,10 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
             <Plus className="h-3.5 w-3.5" />
             新增碰撞 / 事件关系
           </button>
+        ) : (
+          <div className="font-mono-tabular text-xs text-slate-500">
+            点击下方违法或责任记录自动联动定位全文证据
+          </div>
         )}
       </div>
 
@@ -378,11 +541,23 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
           {filteredLegal.map((item) => {
             const catMeta = CATEGORY_LABELS[item.category];
-            const issues = validateLegalConclusion(item);
+            const issues = validateLegalConclusion(item, {
+              entities: caseDoc.entities,
+              supplements,
+            });
             const hasError =
               PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
               issues.some((i) => i.severity === 'error');
             const focused = activeTargetId === item.id;
+            const saveEditedLegal = (patch: Partial<LegalConclusionItem>) => {
+              onSaveLegalItem({
+                ...item,
+                ...patch,
+                ...(item.category === 'violation'
+                  ? { linkConsistencyConfirmed: false, linkConsistencyFingerprint: '' }
+                  : {}),
+              });
+            };
             const prioritizedViolations = [...violationRecords].sort((a, b) => {
               const aSame = a.subjectId === item.subjectId ? 0 : 1;
               const bSame = b.subjectId === item.subjectId ? 0 : 1;
@@ -410,6 +585,9 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                 conclusionLabel: '',
                 causalLinkStatus: 'explicit_linked',
                 linkedViolationIds: [],
+                linkedEntityIds: [],
+                linkedVocabTerms: [],
+                linkConsistencyConfirmed: false,
                 evidences: selectedPdfQuote
                   ? [
                       {
@@ -496,6 +674,17 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     <span className="font-mono-tabular text-slate-500">{catMeta.fieldCode}</span>
                   </div>
                   <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleSelectChainAnchor(item, true);
+                      }}
+                      className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-50"
+                    >
+                      <GitBranch className="h-3 w-3" aria-hidden="true" />
+                      证据链
+                    </button>
                     <ReviewLifecycleBar
                       reviewStatus={item.reviewStatus}
                       hasError={hasError}
@@ -521,7 +710,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </label>
                     <select
                       value={item.subjectId}
-                      onChange={(e) => onSaveLegalItem({ ...item, subjectId: e.target.value })}
+                      onChange={(e) => saveEditedLegal({ subjectId: e.target.value })}
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"
                     >
                       {subjects.map((s) => (
@@ -538,7 +727,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </label>
                     <select
                       value={item.eventId}
-                      onChange={(e) => onSaveLegalItem({ ...item, eventId: e.target.value })}
+                      onChange={(e) => saveEditedLegal({ eventId: e.target.value })}
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"
                     >
                       <option value="">整起事故 (ACC)</option>
@@ -557,8 +746,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     <select
                       value={item.presenceStatus}
                       onChange={(e) =>
-                        onSaveLegalItem({
-                          ...item,
+                        saveEditedLegal({
                           presenceStatus: e.target.value as PresenceStatus,
                         })
                       }
@@ -580,7 +768,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                       type="text"
                       value={item.conclusionLabel}
                       onChange={(e) =>
-                        onSaveLegalItem({ ...item, conclusionLabel: e.target.value })
+                        saveEditedLegal({ conclusionLabel: e.target.value })
                       }
                       placeholder={
                         item.category === 'liability'
@@ -803,7 +991,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     <input
                       type="text"
                       value={item.lawArticle}
-                      onChange={(e) => onSaveLegalItem({ ...item, lawArticle: e.target.value })}
+                      onChange={(e) => saveEditedLegal({ lawArticle: e.target.value })}
                       placeholder="如：《中华人民共和国道路交通安全法》第四十三条第一款"
                       className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
                     />
@@ -817,11 +1005,24 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                   <textarea
                     rows={2}
                     value={item.rawText}
-                    onChange={(e) => onSaveLegalItem({ ...item, rawText: e.target.value })}
-                    placeholder="按文书表达完整摘记，不得改变否定词或责任限定语…"
+                    onChange={(e) => saveEditedLegal({ rawText: e.target.value })}
+                    placeholder={
+                      item.category === 'violation'
+                        ? '按文书原文录入违法行为；系统将自动扫描受控词表与案件实体…'
+                        : '按文书表达完整摘记，不得改变否定词或责任限定语…'
+                    }
                     className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
                   />
                 </div>
+
+                {item.category === 'violation' && (
+                  <ViolationLinkConsistencyBox
+                    item={item}
+                    entities={caseDoc.entities}
+                    supplements={supplements}
+                    onUpdateItem={onSaveLegalItem}
+                  />
+                )}
 
                 {/* Evidence Box */}
                 <div className="mt-3 rounded border border-slate-200 bg-slate-50/60 p-2.5">
@@ -983,6 +1184,486 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Evidence Chain View */}
+      {subTab === 'evidence_chain' && (
+        <div className="flex flex-col gap-3" data-testid="evidence-chain-view">
+          {caseDoc.legalConclusions.length === 0 ? (
+            <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-xs text-slate-500">
+              当前案例暂无违法行为或责任认定记录，请先在「违法 / 原因 / 责任」中录入。
+            </div>
+          ) : (
+            <>
+              {/* Anchor Selector: Violation & Liability items */}
+              <div className="flex flex-col gap-2.5 rounded-lg border border-slate-200 bg-white p-4">
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold text-slate-800">
+                      选择违法行为或责任认定作为链路锚点
+                    </span>
+                    {activeChain && (
+                      <span className="font-mono-tabular text-slate-500">
+                        当前锚点：{activeChain.anchorItem.id} · {CATEGORY_LABELS[activeChain.anchorItem.category].title}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Violations row */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1 text-xs">
+                    <span className="w-20 shrink-0 font-medium text-slate-500">违法行为：</span>
+                    {violationRecords.length === 0 ? (
+                      <span className="text-slate-400">暂无违法记录</span>
+                    ) : (
+                      violationRecords.map((vio) => {
+                        const selected = activeChain?.anchorItem.id === vio.id;
+                        return (
+                          <button
+                            key={vio.id}
+                            type="button"
+                            onClick={() => handleSelectChainAnchor(vio)}
+                            className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-left transition-colors ${
+                              selected
+                                ? 'border-slate-900 bg-slate-900 text-white'
+                                : 'border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-400 hover:bg-white'
+                            }`}
+                          >
+                            <span className="font-mono-tabular font-semibold">{vio.id}</span>
+                            <span className="opacity-75">·</span>
+                            <span className="font-mono-tabular">{vio.subjectId}</span>
+                            <span className="max-w-[180px] truncate">
+                              {vio.conclusionLabel || vio.rawText || PRESENCE_STATUS_META[vio.presenceStatus].label}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Liabilities row */}
+                  <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                    <span className="w-20 shrink-0 font-medium text-slate-500">责任认定：</span>
+                    {liabilityRecords.length === 0 ? (
+                      <span className="text-slate-400">暂无责任划分记录</span>
+                    ) : (
+                      liabilityRecords.map((lia) => {
+                        const selected = activeChain?.anchorItem.id === lia.id;
+                        return (
+                          <button
+                            key={lia.id}
+                            type="button"
+                            onClick={() => handleSelectChainAnchor(lia)}
+                            className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-left transition-colors ${
+                              selected
+                                ? 'border-slate-900 bg-slate-900 text-white'
+                                : 'border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-400 hover:bg-white'
+                            }`}
+                          >
+                            <span className="font-mono-tabular font-semibold">{lia.id}</span>
+                            <span className="opacity-75">·</span>
+                            <span className="font-mono-tabular">{lia.subjectId}</span>
+                            <span className="max-w-[180px] truncate">
+                              {lia.conclusionLabel || lia.rawText || PRESENCE_STATUS_META[lia.presenceStatus].label}
+                            </span>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+
+                {/* Logic consistency diagnostics */}
+                {activeChain && (
+                  <div className="mt-1 flex flex-col gap-1.5 border-t border-slate-100 pt-2.5">
+                    {activeChain.consistencyChecks.map((chk) => (
+                      <div
+                        key={chk.code}
+                        className={`flex items-center gap-2 rounded border px-3 py-1.5 text-xs ${
+                          chk.severity === 'error'
+                            ? 'border-red-200 bg-red-50 text-red-800'
+                            : chk.severity === 'warning'
+                              ? 'border-amber-200 bg-amber-50 text-amber-900'
+                              : 'border-emerald-200 bg-emerald-50/70 text-emerald-900'
+                        }`}
+                      >
+                        {chk.severity === 'error' ? (
+                          <XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        ) : chk.severity === 'warning' ? (
+                          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        ) : (
+                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        )}
+                        <span>{chk.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {activeChain && (
+                <>
+                  {/* 1. 3-Step Causal Chain Overview */}
+                  <div className="rounded-lg border border-slate-200 bg-white p-4">
+                    <div className="mb-3 flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-900">
+                        关联法律链路（违法 → 原因 → 责任）
+                      </span>
+                      <span className="font-mono-tabular text-slate-500">
+                        涉链主体 {activeChain.subjectIds.join(' / ') || '无'} · 证据 {activeChain.evidences.length} 条
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                      {(
+                        [
+                          {
+                            key: 'violation',
+                            title: '1. 违法行为 (D10.F058)',
+                            items: activeChain.violations,
+                            emptyText: '本链路未绑定违法行为（如属无责免除或未关联可在此核查）',
+                          },
+                          {
+                            key: 'cause',
+                            title: '2. 认定原因 (D10.F059)',
+                            items: activeChain.causes,
+                            emptyText: '本链路尚未绑定认定事故原因',
+                          },
+                          {
+                            key: 'liability',
+                            title: '3. 责任划分 (D10.F060)',
+                            items: activeChain.liabilities,
+                            emptyText: '本链路尚未绑定责任划分结论',
+                          },
+                        ] as const
+                      ).map((col) => (
+                        <div
+                          key={col.key}
+                          className="flex flex-col gap-2 rounded-md border border-slate-200 bg-slate-50/60 p-3"
+                        >
+                          <div className="flex items-center justify-between border-b border-slate-200/80 pb-1.5 text-xs font-semibold text-slate-800">
+                            <span>{col.title}</span>
+                            <span className="font-mono-tabular text-slate-500">
+                              {col.items.length}
+                            </span>
+                          </div>
+                          {col.items.length === 0 ? (
+                            <p className="py-2 text-xs leading-relaxed text-slate-400">
+                              {col.emptyText}
+                            </p>
+                          ) : (
+                            col.items.map((node) => {
+                              const isAnchor = node.id === activeChain.anchorItem.id;
+                              return (
+                                <div
+                                  key={node.id}
+                                  className={`rounded border bg-white p-2.5 text-xs ${
+                                    isAnchor
+                                      ? 'border-slate-900 ring-1 ring-slate-900/10'
+                                      : 'border-slate-200'
+                                  }`}
+                                >
+                                  <div className="mb-1 flex items-center justify-between gap-2">
+                                    <span className="font-mono-tabular font-semibold text-slate-900">
+                                      {node.id} · {node.subjectId}
+                                    </span>
+                                    <span className="font-medium text-slate-600">
+                                      {REVIEW_STATUS_META[node.reviewStatus].label}
+                                    </span>
+                                  </div>
+                                  <p className="font-medium text-blue-900">
+                                    {node.conclusionLabel || PRESENCE_STATUS_META[node.presenceStatus].label}
+                                  </p>
+                                  {node.lawArticle && (
+                                    <p className="mt-1 text-[11px] text-slate-600">
+                                      依据：{node.lawArticle}
+                                    </p>
+                                  )}
+                                  {node.rawText && (
+                                    <p className="mt-1 line-clamp-3 text-[11px] leading-relaxed text-slate-600">
+                                      {node.rawText}
+                                    </p>
+                                  )}
+                                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-1.5">
+                                    {node.evidences[0] ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => onJumpToPage(node.evidences[0].page)}
+                                        className="font-mono-tabular text-[11px] font-medium text-blue-700 hover:underline"
+                                      >
+                                        定位原文 p.{node.evidences[0].page}
+                                      </button>
+                                    ) : (
+                                      <span className="text-[11px] text-red-700">无页码证据</span>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSubTab('legal');
+                                        onFocusTarget(
+                                          node.id,
+                                          `${CATEGORY_LABELS[node.category].title} (${node.id})`,
+                                        );
+                                      }}
+                                      className="inline-flex items-center gap-0.5 text-[11px] font-medium text-slate-700 hover:text-slate-900 hover:underline"
+                                    >
+                                      编辑
+                                      <ExternalLink className="h-3 w-3" aria-hidden="true" />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 2. Filtered & Highlighted Document Paragraphs */}
+                  <div className="rounded-lg border border-slate-200 bg-white p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                      <div className="flex items-center gap-2 text-xs">
+                        <FileSearch className="h-4 w-4 text-amber-700" aria-hidden="true" />
+                        <span className="font-semibold text-slate-900">
+                          关联文档段落（自动筛选并高亮）
+                        </span>
+                        <span className="font-mono-tabular text-slate-500">
+                          命中 {matchedParagraphs.filter((p) => p.matchedEvidences.length > 0).length} / 共 {matchedParagraphs.length} 段
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowAllParagraphs((prev) => !prev)}
+                        className="text-xs font-medium text-blue-700 hover:underline"
+                      >
+                        {showAllParagraphs ? '仅看命中段落' : '查看全页文档段落'}
+                      </button>
+                    </div>
+
+                    {Object.keys(pdfPageTexts).length === 0 ? (
+                      <p className="py-4 text-center text-xs text-slate-400">
+                        正在从左侧 PDF 提取文书文本段落…
+                      </p>
+                    ) : visibleParagraphs.length === 0 ? (
+                      <div className="rounded border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
+                        当前证据摘录未在已提取的 PDF 文本段落中精确命中，可点击右上角「查看全页文档段落」人工核对，或在左侧 PDF 框选原文重新引用。
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        {visibleParagraphs.map((para) => {
+                          const hasHit = para.matchedEvidences.length > 0;
+                          const hitQuotes = para.matchedEvidences.map((ev) => ev.quote);
+                          return (
+                            <div
+                              key={`${para.page}-${para.paragraphIndex}`}
+                              onClick={() => onJumpToPage(para.page)}
+                              className={`cursor-pointer rounded-md border p-3 text-xs transition-colors ${
+                                hasHit
+                                  ? 'border-amber-300 bg-amber-50/40 hover:border-amber-400'
+                                  : 'border-slate-200 bg-slate-50/40 hover:border-slate-300'
+                              }`}
+                            >
+                              <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                                <span className="font-mono-tabular font-semibold text-blue-800">
+                                  第 {para.page} 页 · 第 {para.paragraphIndex + 1} 段
+                                </span>
+                                {hasHit ? (
+                                  <span className="font-medium text-amber-900">
+                                    命中引用：
+                                    {Array.from(
+                                      new Set(para.matchedEvidences.map((ev) => ev.sourceId)),
+                                    ).join('、')}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400">上下文段落</span>
+                                )}
+                              </div>
+                              <p className="leading-relaxed text-slate-800">
+                                <HighlightedQuoteText text={para.text} quotes={hitQuotes} />
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 3. Linked Party Records + Linked Evidence Citations */}
+                  <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                    {/* Party records & related collision relations */}
+                    <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2 text-xs">
+                        <span className="font-semibold text-slate-900">
+                          关联当事人 / 组织记录 ({activeChain.partyFieldRecords.length})
+                        </span>
+                        <span className="font-mono-tabular text-slate-500">
+                          主体：{activeChain.subjects.map((s) => `${s.id} ${s.label}`).join(' / ') || '无'}
+                        </span>
+                      </div>
+
+                      {activeChain.partyFieldRecords.length === 0 ? (
+                        <p className="py-3 text-xs text-slate-400">
+                          当前涉链主体暂未录入基础字段记录。
+                        </p>
+                      ) : (
+                        <div className="flex max-h-[360px] flex-col gap-2 overflow-y-auto pr-1">
+                          {activeChain.partyFieldRecords.map((rec) => {
+                            const fieldName = schemaNameByCode.get(rec.fieldCode) || rec.fieldCode;
+                            const valText =
+                              rec.normalizedValues.length > 0
+                                ? rec.normalizedValues.join(' / ')
+                                : rec.rawValue || PRESENCE_STATUS_META[rec.presenceStatus].label;
+                            const sharesEvidence = rec.evidences.some((fev) =>
+                              activeChain.evidences.some(
+                                (cev) =>
+                                  cev.page === fev.page &&
+                                  (findTextMatchRanges(fev.quote, [cev.quote]).length > 0 ||
+                                    findTextMatchRanges(cev.quote, [fev.quote]).length > 0),
+                              ),
+                            );
+                            return (
+                              <div
+                                key={rec.recordId}
+                                className={`rounded border p-2.5 text-xs ${
+                                  sharesEvidence
+                                    ? 'border-amber-300 bg-amber-50/30'
+                                    : 'border-slate-200 bg-slate-50/40'
+                                }`}
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="font-mono-tabular font-semibold text-slate-900">
+                                      {rec.entityId}
+                                    </span>
+                                    <span className="font-mono-tabular text-slate-500">
+                                      {rec.fieldCode}
+                                    </span>
+                                    <span className="font-medium text-slate-800">{fieldName}</span>
+                                  </div>
+                                  <span className="text-[11px] text-slate-500">
+                                    {REVIEW_STATUS_META[rec.reviewStatus].label}
+                                  </span>
+                                </div>
+                                <div className="mt-1 flex items-center justify-between gap-2">
+                                  <span className="text-slate-700">{valText}</span>
+                                  <div className="flex shrink-0 items-center gap-2">
+                                    {rec.evidences[0] && (
+                                      <button
+                                        type="button"
+                                        onClick={() => onJumpToPage(rec.evidences[0].page)}
+                                        className="font-mono-tabular text-[11px] text-blue-700 hover:underline"
+                                      >
+                                        p.{rec.evidences[0].page}
+                                      </button>
+                                    )}
+                                    {onJumpToEntityField && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          onJumpToEntityField(rec.entityId, rec.fieldCode)
+                                        }
+                                        className="text-[11px] font-medium text-blue-700 hover:underline"
+                                      >
+                                        核对字段
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {activeChain.relatedRelations.length > 0 && (
+                        <div className="mt-1 border-t border-slate-100 pt-2.5">
+                          <div className="mb-1.5 text-xs font-semibold text-slate-800">
+                            关联碰撞与事件关系 ({activeChain.relatedRelations.length})
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            {activeChain.relatedRelations.map((rel) => (
+                              <div
+                                key={rel.id}
+                                className="flex items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs"
+                              >
+                                <span className="text-slate-800">
+                                  <span className="font-mono-tabular font-semibold">#{rel.stageOrder}</span>{' '}
+                                  {cleanRelationEntityId(rel.sourceId)} →{' '}
+                                  {rel.relationType || rel.action} →{' '}
+                                  {cleanRelationEntityId(rel.targetId)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSubTab('relations');
+                                    onFocusTarget(rel.id, `事件关系 (${rel.id})`);
+                                  }}
+                                  className="shrink-0 text-[11px] font-medium text-blue-700 hover:underline"
+                                >
+                                  查看关系
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Evidence Citations List */}
+                    <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2 text-xs">
+                        <span className="font-semibold text-slate-900">
+                          链路证据引用清单 ({activeChain.evidences.length})
+                        </span>
+                        <span className="text-slate-500">点击条目跳转并高亮左侧 PDF 原文</span>
+                      </div>
+
+                      {activeChain.evidences.length === 0 ? (
+                        <p className="py-3 text-xs text-slate-400">
+                          当前链路暂无带页码的证据摘录。
+                        </p>
+                      ) : (
+                        <div className="flex max-h-[360px] flex-col gap-2 overflow-y-auto pr-1">
+                          {activeChain.evidences.map((ev) => (
+                            <button
+                              key={ev.id}
+                              type="button"
+                              onClick={() => {
+                                onJumpToPage(ev.page);
+                                onHighlightEvidences?.([
+                                  { page: ev.page, quote: ev.quote, label: ev.sourceLabel },
+                                  ...activeChain.evidences
+                                    .filter((x) => x.id !== ev.id)
+                                    .map((x) => ({
+                                      page: x.page,
+                                      quote: x.quote,
+                                      label: x.sourceLabel,
+                                    })),
+                                ]);
+                              }}
+                              className="flex flex-col gap-1 rounded border border-amber-200 bg-amber-50/40 p-2.5 text-left text-xs transition-colors hover:border-amber-400 hover:bg-amber-50"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium text-slate-900">
+                                  {ev.sourceLabel} ·{' '}
+                                  <span className="font-mono-tabular">{ev.subjectId}</span>
+                                </span>
+                                <span className="font-mono-tabular font-semibold text-blue-700">
+                                  p.{ev.page}
+                                </span>
+                              </div>
+                              <p className="leading-relaxed text-slate-700">{ev.quote}</p>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </>
+              )}
+            </>
+          )}
         </div>
       )}
 

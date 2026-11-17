@@ -9,11 +9,16 @@ import {
   Scale,
   Search,
 } from 'lucide-react';
-import { ACCEPTANCE_CHECKLIST_ITEMS, PRESENCE_STATUS_META } from '../data/schemaCatalog';
+import {
+  ACCEPTANCE_CHECKLIST_ITEMS,
+  INITIAL_VOCABULARY_SUPPLEMENTS,
+  PRESENCE_STATUS_META,
+} from '../data/schemaCatalog';
 import {
   CaseDocument,
   CaseWorkItem,
   UserRole,
+  VocabularySupplementItem,
   WorkItemFilterStatus,
 } from '../types/gold';
 import {
@@ -31,6 +36,7 @@ interface AcceptanceExportPanelProps {
   caseDoc: CaseDocument;
   allCases: CaseDocument[];
   userRole: UserRole;
+  supplements?: VocabularySupplementItem[];
   statusFilter: WorkItemFilterStatus;
   onStatusFilterChange: (status: WorkItemFilterStatus) => void;
   onJumpToItem: (item: CaseWorkItem) => void;
@@ -51,6 +57,7 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
   caseDoc,
   allCases,
   userRole,
+  supplements = INITIAL_VOCABULARY_SUPPLEMENTS,
   statusFilter,
   onStatusFilterChange,
   onJumpToItem,
@@ -66,9 +73,9 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
   const [entityFilter, setEntityFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
-  const readiness = useMemo(() => computeCaseReadiness(caseDoc), [caseDoc]);
-  const allWorkItems = useMemo(() => collectCaseWorkItems(caseDoc), [caseDoc]);
-  const entityProgressMap = useMemo(() => computeEntityProgressMap(caseDoc), [caseDoc]);
+  const readiness = useMemo(() => computeCaseReadiness(caseDoc, supplements), [caseDoc, supplements]);
+  const allWorkItems = useMemo(() => collectCaseWorkItems(caseDoc, supplements), [caseDoc, supplements]);
+  const entityProgressMap = useMemo(() => computeEntityProgressMap(caseDoc, supplements), [caseDoc, supplements]);
 
   const counts = useMemo(() => {
     let pending = 0;
@@ -143,7 +150,7 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
 
   const handleDownloadAllScoredJsonl = () => {
     const lines = allCases
-      .filter((c) => computeCaseReadiness(c).eligibleForScoring)
+      .filter((c) => computeCaseReadiness(c, supplements).eligibleForScoring)
       .map((c) =>
         JSON.stringify(
           exportFormat === 'v0.2'
@@ -181,7 +188,7 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
   };
 
   const eligibleCasesCount = allCases.filter(
-    (c) => computeCaseReadiness(c).eligibleForScoring,
+    (c) => computeCaseReadiness(c, supplements).eligibleForScoring,
   ).length;
 
   const metricStrip: Array<{
