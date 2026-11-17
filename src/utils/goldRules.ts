@@ -16,6 +16,7 @@ import {
   EntityProgressSummary,
   EventRelationItem,
   EvidenceItem,
+  FieldDefinition,
   FieldFilterBucket,
   FieldRecord,
   LegalConclusionItem,
@@ -1700,6 +1701,99 @@ export function confirmViolationLinkConsistency(
     linkConsistencyFingerprint: buildViolationConsistencyFingerprint(item),
   };
 }
+
+export interface ControlledVocabOption {
+  value: string;
+  source: 'preset' | 'supplement' | 'both';
+  codeTable?: string;
+  standardCode?: string;
+  synonymsText?: string;
+}
+
+export function buildControlledVocabOptions(
+  def: Pick<FieldDefinition, 'presetOptions' | 'existingCodeTable'>,
+  supplement?: Pick<VocabularySupplementItem, 'candidateOptions' | 'standardCode' | 'synonyms'>,
+): ControlledVocabOption[] {
+  const presetSet = new Set(def.presetOptions || []);
+  const supplementList = supplement?.candidateOptions || [];
+  const supplementSet = new Set(supplementList);
+  const seen = new Set<string>();
+  const result: ControlledVocabOption[] = [];
+
+  const orderedValues = [...(def.presetOptions || []), ...supplementList];
+  for (const raw of orderedValues) {
+    const value = raw.trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    const inPreset = presetSet.has(raw);
+    const inSupp = supplementSet.has(raw);
+    const source: ControlledVocabOption['source'] =
+      inPreset && inSupp ? 'both' : inPreset ? 'preset' : 'supplement';
+    result.push({
+      value,
+      source,
+      codeTable: def.existingCodeTable || undefined,
+      standardCode: supplement?.standardCode || undefined,
+      synonymsText: supplement?.synonyms || undefined,
+    });
+  }
+
+  return result;
+}
+
+export function filterControlledVocabOptions(
+  options: ControlledVocabOption[],
+  query: string,
+): ControlledVocabOption[] {
+  const trimmed = query.trim().toLowerCase();
+  if (!trimmed) return options;
+
+  const tokens = trimmed.split(/\s+/).filter(Boolean);
+  const ranked: Array<{ option: ControlledVocabOption; rank: number; idx: number }> = [];
+
+  options.forEach((option, idx) => {
+    const valueLower = option.value.toLowerCase();
+    const metaLower = `${option.synonymsText || ''} ${option.standardCode || ''} ${option.codeTable || ''}`.toLowerCase();
+
+    let rank = -1;
+    if (valueLower === trimmed) {
+      rank = 0;
+    } else if (valueLower.startsWith(trimmed)) {
+      rank = 1;
+    } else if (valueLower.includes(trimmed)) {
+      rank = 2;
+    } else if (tokens.every((tok) => valueLower.includes(tok))) {
+      rank = 3;
+    } else if (
+      metaLower.includes(trimmed) ||
+      tokens.every((tok) => `${valueLower} ${metaLower}`.includes(tok))
+    ) {
+      rank = 4;
+    }
+
+    if (rank >= 0) {
+      ranked.push({ option, rank, idx });
+    }
+  });
+
+  ranked.sort((a, b) => a.rank - b.rank || a.idx - b.idx);
+  return ranked.map((entry) => entry.option);
+}
+
+export function stepVocabHighlightIndex(
+  currentIndex: number,
+  totalCount: number,
+  direction: 'next' | 'prev',
+): number {
+  if (totalCount <= 0) return -1;
+  if (direction === 'next') {
+    if (currentIndex < 0 || currentIndex >= totalCount - 1) return 0;
+    return currentIndex + 1;
+  }
+  if (currentIndex <= 0 || currentIndex >= totalCount) return totalCount - 1;
+  return currentIndex - 1;
+}
+
 
 
 

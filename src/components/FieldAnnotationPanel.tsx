@@ -30,6 +30,7 @@ import {
   VocabularySupplementItem,
 } from '../types/gold';
 import {
+  buildControlledVocabOptions,
   cleanRelationEntityId,
   computeEntityWorkbenchStats,
   deriveTimeBucket,
@@ -40,6 +41,7 @@ import {
   validateLegalConclusion,
   validateRelation,
 } from '../utils/goldRules';
+import { ControlledVocabCombobox } from './ControlledVocabCombobox';
 import { ReviewLifecycleBar, getCardStatusBorderClass } from './ReviewLifecycleBar';
 import { ViolationLinkConsistencyBox } from './ViolationLinkConsistencyBox';
 
@@ -119,6 +121,11 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
   const supplementByCode = useMemo(
     () => new Map(supplements.map((s) => [s.fieldCode, s])),
     [supplements],
+  );
+
+  const schemaByCode = useMemo(
+    () => new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f])),
+    [],
   );
 
   const recordByFieldCode = useMemo(() => {
@@ -407,9 +414,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
         {applicableFields.map((def) => {
           const record = recordByFieldCode.get(def.fieldCode);
           const supplement = supplementByCode.get(def.fieldCode);
-          const mergedOptions = Array.from(
-            new Set([...(def.presetOptions || []), ...(supplement?.candidateOptions || [])]),
-          );
+          const vocabOptions = buildControlledVocabOptions(def, supplement);
           const recordKey = `${selectedEntity.id}:${def.fieldCode}`;
           const isFocused = activeRecordKey === recordKey;
           const presence = record?.presenceStatus;
@@ -594,57 +599,32 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           htmlFor={`norm-${recordKey}`}
                           className="mb-1 block text-xs font-medium text-slate-700"
                         >
-                          人工确认标准值{def.allowMultiple ? '（支持多选）' : '（单选/输入）'}
+                          人工确认标准值
+                          {vocabOptions.length > 0
+                            ? def.allowMultiple
+                              ? '（词表检索·支持多选）'
+                              : '（词表检索·单选）'
+                            : def.allowMultiple
+                              ? '（支持多选）'
+                              : '（单选/输入）'}
                         </label>
-                        {mergedOptions.length > 0 ? (
-                          def.allowMultiple ? (
-                            <div className="flex flex-wrap gap-1.5 rounded-md border border-slate-200 bg-slate-50 p-2">
-                              {mergedOptions.map((opt) => {
-                                const checked = record.normalizedValues.includes(opt);
-                                return (
-                                  <label
-                                    key={opt}
-                                    className={`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-0.5 text-xs ${
-                                      checked
-                                        ? 'border-blue-600 bg-blue-50 text-blue-900'
-                                        : 'border-slate-200 bg-white text-slate-700'
-                                    }`}
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={checked}
-                                      onChange={(e) => {
-                                        const next = e.target.checked
-                                          ? [...record.normalizedValues, opt]
-                                          : record.normalizedValues.filter((v) => v !== opt);
-                                        handleValueUpdate(def, record, { normalizedValues: next });
-                                      }}
-                                      className="h-3 w-3 accent-blue-700"
-                                    />
-                                    {opt}
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          ) : (
-                            <select
-                              id={`norm-${recordKey}`}
-                              value={record.normalizedValues[0] || ''}
-                              onChange={(e) =>
-                                handleValueUpdate(def, record, {
-                                  normalizedValues: e.target.value ? [e.target.value] : [],
-                                })
-                              }
-                              className="w-full rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
-                            >
-                              <option value="">-- 请选择标准词表取值 --</option>
-                              {mergedOptions.map((opt) => (
-                                <option key={opt} value={opt}>
-                                  {opt}
-                                </option>
-                              ))}
-                            </select>
-                          )
+                        {vocabOptions.length > 0 ? (
+                          <ControlledVocabCombobox
+                            id={`norm-${recordKey}`}
+                            ariaLabel={`${def.fieldCode} ${def.fieldName} 人工确认标准值`}
+                            options={vocabOptions}
+                            multiple={def.allowMultiple}
+                            selectedValues={record.normalizedValues}
+                            allowCustomInput={def.valueType === '整数'}
+                            onChangeValues={(nextValues) =>
+                              handleValueUpdate(def, record, { normalizedValues: nextValues })
+                            }
+                            placeholder={
+                              def.allowMultiple
+                                ? '输入关键词检索词表（↑↓ 方向键选择，可多选）'
+                                : '输入关键词检索或选择标准词表取值…'
+                            }
+                          />
                         ) : (
                           <input
                             id={`norm-${recordKey}`}
@@ -1175,21 +1155,38 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           <label className="mb-1 block text-xs font-medium text-slate-700">
                             标准结论 (candidate_value)
                           </label>
-                          <input
-                            type="text"
-                            value={item.conclusionLabel}
-                            onChange={(e) =>
-                              saveEditedLegal({ conclusionLabel: e.target.value })
-                            }
-                            placeholder={
+                          {(() => {
+                            const legalFieldCode =
+                              item.category === 'violation'
+                                ? 'D10.F058'
+                                : item.category === 'cause'
+                                  ? 'D10.F059'
+                                  : 'D10.F060';
+                            const legalDef = schemaByCode.get(legalFieldCode);
+                            const legalSupp = supplementByCode.get(legalFieldCode);
+                            const legalVocabOptions = legalDef
+                              ? buildControlledVocabOptions(legalDef, legalSupp)
+                              : [];
+                            const legalPlaceholder =
                               item.category === 'liability'
                                 ? '全部责任 / 主要责任 / 次要责任 / 无责任'
                                 : item.category === 'cause'
                                   ? '根本原因 / 全部原因 / 主要原因 / 次要原因'
-                                  : '如：未保持安全车距 / 违规变道'
-                            }
-                            className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
-                          />
+                                  : '检索标准违法词表或输入自定义结论…';
+                            return (
+                              <ControlledVocabCombobox
+                                compact
+                                ariaLabel={`${item.id} 标准结论`}
+                                options={legalVocabOptions}
+                                selectedValues={item.conclusionLabel ? [item.conclusionLabel] : []}
+                                allowCustomInput
+                                onChangeValues={(vals) =>
+                                  saveEditedLegal({ conclusionLabel: vals[0] || '' })
+                                }
+                                placeholder={legalPlaceholder}
+                              />
+                            );
+                          })()}
                         </div>
                       </div>
 
@@ -1759,20 +1756,53 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               </option>
                             ))}
                           </select>
-                          <input
-                            type="text"
-                            aria-label="标准关系类型"
-                            value={rel.relationType ?? rel.collisionMode ?? rel.action}
-                            onChange={(e) =>
-                              onSaveRelationItem({
-                                ...rel,
-                                relationType: e.target.value,
-                                collisionMode: e.target.value,
-                              })
+                          {(() => {
+                            const relFieldCode = rel.fieldCode || 'D08.F049';
+                            const relDef = schemaByCode.get(relFieldCode);
+                            const relSupp = supplementByCode.get(relFieldCode);
+                            const relVocabOptions = relDef
+                              ? buildControlledVocabOptions(relDef, relSupp)
+                              : [];
+                            const relVal = rel.relationType ?? rel.collisionMode ?? rel.action;
+
+                            if (relVocabOptions.length > 0) {
+                              return (
+                                <ControlledVocabCombobox
+                                  compact
+                                  ariaLabel="标准关系类型"
+                                  options={relVocabOptions}
+                                  selectedValues={relVal ? [relVal] : []}
+                                  allowCustomInput
+                                  onChangeValues={(vals) => {
+                                    const nextVal = vals[0] || '';
+                                    onSaveRelationItem({
+                                      ...rel,
+                                      relationType: nextVal,
+                                      collisionMode: nextVal,
+                                    });
+                                  }}
+                                  placeholder="检索碰撞方式或关系类型…"
+                                />
+                              );
                             }
-                            placeholder="关系类型 (如 撞击路侧固定设施)"
-                            className="rounded border border-slate-300 bg-white px-2 py-1"
-                          />
+
+                            return (
+                              <input
+                                type="text"
+                                aria-label="标准关系类型"
+                                value={relVal}
+                                onChange={(e) =>
+                                  onSaveRelationItem({
+                                    ...rel,
+                                    relationType: e.target.value,
+                                    collisionMode: e.target.value,
+                                  })
+                                }
+                                placeholder="关系类型 (如 撞击路侧固定设施)"
+                                className="rounded border border-slate-300 bg-white px-2 py-1"
+                              />
+                            );
+                          })()}
                           <select
                             aria-label="受动客体"
                             value={cleanRelationEntityId(rel.targetId)}

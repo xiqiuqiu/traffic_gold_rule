@@ -4,6 +4,7 @@ import {
   applyAllViolationLinks,
   applyViolationEntityLink,
   applyViolationVocabLink,
+  buildControlledVocabOptions,
   buildGoldExportPayload,
   buildGoldV02ExportPayload,
   cleanSelectedPdfQuote,
@@ -14,6 +15,7 @@ import {
   confirmViolationLinkConsistency,
   deriveTimeBucket,
   extractPdfParagraphMatches,
+  filterControlledVocabOptions,
   filterWorkItems,
   findTextMatchRanges,
   generateNextEntityId,
@@ -23,6 +25,7 @@ import {
   scanViolationLinkMatches,
   sortLegalConclusionsByChain,
   splitPdfPageIntoParagraphs,
+  stepVocabHighlightIndex,
   traceLegalEvidenceChain,
   validateFieldRecord,
   validateLegalConclusion,
@@ -677,6 +680,77 @@ test('applyViolationVocabLink and applyViolationEntityLink update fields determi
     assert.equal(afterEvent.eventId, e01Match.entityId);
   }
 });
+
+test('buildControlledVocabOptions merges platform presets and supplements without duplicates', () => {
+  const zmtjDef = MASTER_FIELD_SCHEMA.find((f) => f.fieldCode === 'D07.F044');
+  assert.ok(zmtjDef);
+  const zmtjOpts = buildControlledVocabOptions(zmtjDef);
+  assert.equal(zmtjOpts.length, zmtjDef.presetOptions.length);
+  assert.ok(zmtjOpts.every((o) => o.source === 'preset' && o.codeTable === 'zmtj'));
+
+  const surfaceDef = MASTER_FIELD_SCHEMA.find((f) => f.fieldCode === 'D07.F042');
+  const surfaceSupp = INITIAL_VOCABULARY_SUPPLEMENTS.find((s) => s.fieldCode === 'D07.F042');
+  assert.ok(surfaceDef && surfaceSupp);
+  const surfaceOpts = buildControlledVocabOptions(surfaceDef, surfaceSupp);
+  assert.equal(surfaceOpts.length, surfaceSupp.candidateOptions.length);
+  assert.ok(surfaceOpts.every((o) => o.source === 'supplement' && o.standardCode === 'SURFACE_COND'));
+
+  // Deduplicate overlapping value
+  const mergedOpts = buildControlledVocabOptions(
+    { presetOptions: ['阴', '晴'], existingCodeTable: 'tq' },
+    { candidateOptions: ['晴', '浓雾（团雾）'], standardCode: 'WEATHER', synonyms: '雾天' },
+  );
+  assert.deepEqual(
+    mergedOpts.map((o) => [o.value, o.source]),
+    [
+      ['阴', 'preset'],
+      ['晴', 'both'],
+      ['浓雾（团雾）', 'supplement'],
+    ],
+  );
+});
+
+test('filterControlledVocabOptions ranks exact, prefix, substring, and synonym matches cleanly', () => {
+  const zmtjDef = MASTER_FIELD_SCHEMA.find((f) => f.fieldCode === 'D07.F044')!;
+  const zmtjOpts = buildControlledVocabOptions(zmtjDef);
+
+  assert.equal(filterControlledVocabOptions(zmtjOpts, '').length, zmtjOpts.length);
+  const nightMatches = filterControlledVocabOptions(zmtjOpts, '夜间');
+  assert.deepEqual(
+    nightMatches.map((m) => m.value),
+    ['夜间无照明视线偏暗', '夜间有路灯照明'],
+  );
+
+  // Synonym match on D07.F042
+  const surfaceDef = MASTER_FIELD_SCHEMA.find((f) => f.fieldCode === 'D07.F042')!;
+  const surfaceSupp = INITIAL_VOCABULARY_SUPPLEMENTS.find((s) => s.fieldCode === 'D07.F042')!;
+  const surfaceOpts = buildControlledVocabOptions(surfaceDef, surfaceSupp);
+  const synonymHits = filterControlledVocabOptions(surfaceOpts, '沥青路面干燥平整');
+  assert.ok(synonymHits.length > 0);
+  assert.equal(synonymHits[0].value, '干燥（沥青路面）');
+
+  // Ranking order: exact > prefix > substring
+  const custom = buildControlledVocabOptions({
+    presetOptions: ['机动车道违停', '机动车', '非机动车道'],
+    existingCodeTable: '',
+  });
+  const ranked = filterControlledVocabOptions(custom, '机动车');
+  assert.deepEqual(
+    ranked.map((r) => r.value),
+    ['机动车', '机动车道违停', '非机动车道'],
+  );
+});
+
+test('stepVocabHighlightIndex wraps cleanly on next/prev arrow navigation', () => {
+  assert.equal(stepVocabHighlightIndex(-1, 0, 'next'), -1);
+  assert.equal(stepVocabHighlightIndex(-1, 3, 'next'), 0);
+  assert.equal(stepVocabHighlightIndex(0, 3, 'next'), 1);
+  assert.equal(stepVocabHighlightIndex(2, 3, 'next'), 0);
+  assert.equal(stepVocabHighlightIndex(0, 3, 'prev'), 2);
+  assert.equal(stepVocabHighlightIndex(2, 3, 'prev'), 1);
+  assert.equal(stepVocabHighlightIndex(-1, 3, 'prev'), 2);
+});
+
 
 
 
