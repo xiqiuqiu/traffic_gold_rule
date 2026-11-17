@@ -63,6 +63,7 @@ export interface EntityItem {
   kind: EntityKind;
   label: string;
   subtitle?: string;
+  roleLabel?: string;
 }
 
 export interface FieldRecord {
@@ -82,6 +83,12 @@ export interface FieldRecord {
 
 export type LegalCategory = 'violation' | 'cause' | 'liability';
 
+export type CausalLinkStatus =
+  | 'unspecified'
+  | 'explicit_linked'
+  | 'explicit_unlinked'
+  | 'multiple_mixed';
+
 export interface LegalConclusionItem {
   id: string;
   category: LegalCategory;
@@ -91,6 +98,9 @@ export interface LegalConclusionItem {
   rawText: string;
   lawArticle: string;
   conclusionLabel: string;
+  causalLinkStatus?: CausalLinkStatus;
+  linkedViolationIds?: string[];
+  linkedCauseIds?: string[];
   evidences: EvidenceItem[];
   reviewStatus: ReviewStatus;
   disputeReason: string;
@@ -99,13 +109,16 @@ export interface LegalConclusionItem {
 
 export interface EventRelationItem {
   id: string;
+  fieldCode?: string;
   eventId: string;
   stageOrder: number;
   sourceId: string;
   action: string;
+  relationType?: string;
   targetId: string;
   collisionMode: string;
   directionNote: string;
+  presenceStatus?: PresenceStatus;
   evidences: EvidenceItem[];
   reviewStatus: ReviewStatus;
   disputeReason: string;
@@ -124,12 +137,14 @@ export interface AuditLogEntry {
 
 export interface CaseDocument {
   caseId: string;
+  documentId?: string;
   title: string;
   pilotCode: string;
   scenarioSummary: string;
   pdfUrl: string;
   sourceFilename: string;
   fileSha256: string;
+  sourceHashFull?: string;
   pageCount: number;
   manualVersion: string;
   annotationVersion: string;
@@ -163,3 +178,47 @@ export interface ReadinessSummary {
   eligibleForScoring: boolean;
   blockingReasons: string[];
 }
+
+export type WorkItemFilterStatus =
+  | 'all'
+  | 'pending_action'
+  | 'draft'
+  | 'disputed'
+  | 'blocking_or_error'
+  | 'checked'
+  | 'specialist_review';
+
+export type FieldFilterBucket = WorkItemFilterStatus | 'unstarted';
+
+export interface CaseWorkItem {
+  id: string;
+  itemType: 'field' | 'legal' | 'relation';
+  entityId: string;
+  code: string;
+  title: string;
+  presenceStatus: PresenceStatus;
+  reviewStatus: ReviewStatus;
+  hasBlockingOrError: boolean;
+  needsAttention: boolean;
+  issueSummary: string;
+  valuePreview: string;
+  notePreview: string;
+  targetTab: 'fields' | 'legal';
+  fieldCode?: string;
+  legalOrRelId?: string;
+  relationSubTab?: 'legal' | 'relations';
+}
+
+export interface EntityProgressSummary {
+  entityId: string;
+  totalItems: number;
+  draftCount: number;
+  disputedCount: number;
+  checkedCount: number;
+  specialistCount: number;
+  errorOrBlockingCount: number;
+  pendingCount: number;
+  applicableTotalCount: number;
+  applicableUnstartedCount: number;
+}
+

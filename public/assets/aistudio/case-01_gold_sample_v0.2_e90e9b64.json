@@ -1,0 +1,556 @@
+{
+  "case_id": "CASE-01",
+  "document_id": "real-full-01",
+  "document_version": "v1.0",
+  "source_hash": "793cce742dadc66b1032a0f95cdaf26a27f1acaf669e6bbb11af4dcda6892446",
+  "schema_version": "1.1-draft",
+  "ownership_version": "0.2-draft",
+  "subjects": [
+    {
+      "subject_id": "ACC",
+      "subject_type": "ACC",
+      "role": "事故主体"
+    },
+    {
+      "subject_id": "P01",
+      "subject_type": "P",
+      "role": "机动车驾驶人"
+    },
+    {
+      "subject_id": "V01",
+      "subject_type": "V",
+      "role": "事故车辆"
+    },
+    {
+      "subject_id": "E01",
+      "subject_type": "E",
+      "role": "单方碰撞事件"
+    },
+    {
+      "subject_id": "R01",
+      "subject_type": "R",
+      "role": "事发道路及路侧设施"
+    },
+    {
+      "subject_id": "O01",
+      "subject_type": "O",
+      "role": "办案机构"
+    }
+  ],
+  "facts": [
+    {
+      "record_id": "FR-01-001",
+      "field_code": "D01.F001",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "[REDACTED_PII]",
+      "candidate_value": "610113120260000042",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "道 路 交 通 事 故 认 定 书 第 6101************42 号"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-01-002",
+      "field_code": "D01.F003",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "财产损失事故",
+      "candidate_value": "财产损失事故",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "事故类别 财产损失事故"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-01-003",
+      "field_code": "D02.F006",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "2026年04月12日23时15分许",
+      "candidate_value": "2026-04-12 23:15",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "交通事故时间 2026年04月12日23时15分许"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-01-004",
+      "field_code": "D02.F007",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "23时15分许（夜间）",
+      "candidate_value": "晚间/夜间 (18:00-23:59)",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "交通事故时间 2026年04月12日23时15分许"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-01-005-A",
+      "field_code": "D07.F041",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "阴（受微雨影响）",
+      "candidate_value": "阴",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "天气 阴（路面湿滑）"
+        }
+      ],
+      "review": "disputed"
+    },
+    {
+      "record_id": "FR-01-005-B",
+      "field_code": "D07.F041",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "阴（受微雨影响）",
+      "candidate_value": "微雨",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "路面受微雨影响湿滑。"
+        }
+      ],
+      "review": "disputed"
+    },
+    {
+      "record_id": "FR-01-006",
+      "field_code": "D03.F015",
+      "subject_id": "P01",
+      "presence": "present",
+      "raw_value": "驾驶小型普通客车",
+      "candidate_value": "机动车驾驶人",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "姓名：张伟...交通方式：驾驶小型普通客车，号牌号码：陕A88X99"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-01-007",
+      "field_code": "D03.F019",
+      "subject_id": "P01",
+      "presence": "present",
+      "raw_value": "未受伤",
+      "candidate_value": "未受伤",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "伤害情况：未受伤。"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-01-008",
+      "field_code": "D07.F042",
+      "subject_id": "R01",
+      "presence": "present",
+      "raw_value": "路面受微雨影响湿滑",
+      "candidate_value": "湿滑（受微雨影响）",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "路面受微雨影响湿滑。"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk5vems-uobn",
+      "field_code": "D01.F002",
+      "subject_id": "ACC",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk5xdee-q1ai",
+      "field_code": "D09.F053",
+      "subject_id": "ACC",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk5xpgn-cxlk",
+      "field_code": "D09.F054",
+      "subject_id": "ACC",
+      "presence": "explicit_negative",
+      "raw_value": "无人员伤亡",
+      "candidate_value": "0",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "无人员伤亡"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk5zeby-6w0d",
+      "field_code": "D09.F057",
+      "subject_id": "ACC",
+      "presence": "explicit_negative",
+      "raw_value": "伤亡情况 无人员伤亡",
+      "candidate_value": "认定书填发时载明伤亡口径",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "伤亡情况 无人员伤亡"
+        }
+      ],
+      "review": "disputed"
+    },
+    {
+      "record_id": "FR-mwk665bh-tn1q",
+      "field_code": "D02.F008",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "西安市高新区丈八东路与唐延路十字以南200米处",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "西安市高新区丈八东路与唐延路十字以南200米处"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk674w9-2bgi",
+      "field_code": "D02.F011",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "丈八东路与唐延路十字以南200米处",
+      "candidate_value": "R01",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "丈八东路与唐延路十字以南200米处"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk67pk1-n6fh",
+      "field_code": "D02.F012",
+      "subject_id": "ACC",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk68849-eosa",
+      "field_code": "D02.F014",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "西安市公安局交通警察支队高新区大队",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "西安市公安局交通警察支队高新区大队"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6961f",
+      "field_code": "D07.F044",
+      "subject_id": "ACC",
+      "presence": "present",
+      "raw_value": "夜 间无 照 明 视线偏暗",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "夜 间无 照 明 视线偏暗"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6dl8t-u3t6",
+      "field_code": "D06.F033",
+      "subject_id": "R01",
+      "presence": "present",
+      "raw_value": "沿 丈八东路 由北 向南 行 驶至唐延路十字南 侧 200米处",
+      "candidate_value": "一般城市道路",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "沿 丈八东路 由北 向南 行 驶至唐延路十字南 侧 200米处"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6hpn8-frkn",
+      "field_code": "D06.F035",
+      "subject_id": "R01",
+      "presence": "present",
+      "raw_value": "事故现场位于双向六车道沥青路面",
+      "candidate_value": "双向六车道",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "事故现场位于双向六车道沥青路面"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6i4uv",
+      "field_code": "D06.F036",
+      "subject_id": "R01",
+      "presence": "present",
+      "raw_value": "中央设有绿 化带隔离",
+      "candidate_value": "中央绿化带隔离",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "中央设有绿 化带隔离"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6kbcu-h3oh",
+      "field_code": "D04.F021",
+      "subject_id": "V01",
+      "presence": "present",
+      "raw_value": "张伟驾驶陕A88X99号小型普通客车",
+      "candidate_value": "小型普通客车",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "张伟驾驶陕A88X99号小型普通客车"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6kpin-ewii",
+      "field_code": "D04.F022",
+      "subject_id": "V01",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6kwem-r1vp",
+      "field_code": "D05.F027",
+      "subject_id": "V01",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6lka7-j5be",
+      "field_code": "D05.F028",
+      "subject_id": "V01",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6lml6-41p8",
+      "field_code": "D05.F074",
+      "subject_id": "V01",
+      "presence": "present",
+      "raw_value": "车辆失 控偏离行 驶车道，",
+      "candidate_value": "失控",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "车辆失 控偏离行 驶车道，"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6lzz0-cj7q",
+      "field_code": "D05.F075",
+      "subject_id": "V01",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6mg2w-93r2",
+      "field_code": "D03.F016",
+      "subject_id": "P01",
+      "presence": "present",
+      "raw_value": "张伟驾驶陕A88X99号小型普通客车",
+      "candidate_value": "驾驶小型普通客车",
+      "claim_type": "document_fact",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "张伟驾驶陕A88X99号小型普通客车"
+        }
+      ],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6mw2u-oh0s",
+      "field_code": "D05.F029",
+      "subject_id": "P01",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    },
+    {
+      "record_id": "FR-mwk6n2tm-cbqq",
+      "field_code": "D05.F075",
+      "subject_id": "P01",
+      "presence": "not_mentioned",
+      "claim_type": "document_fact",
+      "evidence": [],
+      "review": "checked"
+    }
+  ],
+  "legal_records": [
+    {
+      "record_id": "VIO-01",
+      "kind": "violation",
+      "field_code": "D10.F058",
+      "subject_id": "P01",
+      "presence": "present",
+      "raw_value": "张伟的行为违反了《中华人民共和国道路交通安全法》第二十二条第一款：“机动车驾驶人应当遵守道路交通安全法律、法规的规定，按照操作规范安全驾驶、文明驾驶。”之规定。",
+      "candidate_value": "未按操作规范安全驾驶",
+      "causal_link_status": "unspecified",
+      "linked_violation_record_ids": [],
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "张伟的行为违反了《中华人民共和国道路交通安全法》第二十二条第一款"
+        }
+      ],
+      "review": "disputed"
+    },
+    {
+      "record_id": "CAU-01",
+      "kind": "cause",
+      "field_code": "D10.F059",
+      "subject_id": "P01",
+      "presence": "present",
+      "raw_value": "张伟驾驶机动车在夜间湿滑路面行驶时，未能按照操作规范安全驾驶、文明驾驶，未保持安全行驶速度，导致车辆失控撞击护栏，是造成本次交通事故发生的根本原因。",
+      "candidate_value": "根本原因",
+      "causal_link_status": "unspecified",
+      "linked_violation_record_ids": [],
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "未保持安全行驶速度，导致车辆失控撞击护栏，是造成本次交通事故发生的根本原因。"
+        }
+      ],
+      "review": "disputed"
+    }
+  ],
+  "responsibilities": [
+    {
+      "record_id": "LIA-01",
+      "field_code": "D10.F060",
+      "subject_id": "P01",
+      "presence": "present",
+      "candidate_value": "全部责任",
+      "raw_value": "依据《道路交通事故处理程序规定》第六0条第一款第（一）项之规定，认定张伟负本次交通事故的全部责任。",
+      "linked_cause_record_ids": [],
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "认定张伟负本次交通事故的全部责任。"
+        }
+      ],
+      "review": "specialist_review"
+    }
+  ],
+  "relations": [
+    {
+      "record_id": "REL-01",
+      "field_code": "D08.F049",
+      "subject_id": "V01",
+      "relation_type": "撞击路侧固定设施",
+      "object_id": "R01",
+      "event_id": "E01",
+      "sequence_number": 1,
+      "presence": "present",
+      "evidence": [
+        {
+          "source_document_id": "real-full-01",
+          "page": 1,
+          "excerpt": "车辆失控偏离行驶车道，撞击路侧西侧护栏及交通标志杆"
+        }
+      ],
+      "review": "disputed"
+    }
+  ]
+}

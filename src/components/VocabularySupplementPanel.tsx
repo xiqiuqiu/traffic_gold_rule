@@ -80,8 +80,8 @@ export const VocabularySupplementPanel: React.FC<VocabularySupplementPanelProps>
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <div className="flex items-center rounded-md border border-slate-200 bg-slate-50 p-0.5">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center rounded-md bg-slate-100 p-0.5">
             {(['ALL', '待审核', '已核定'] as const).map((st) => (
               <button
                 key={st}
@@ -101,7 +101,7 @@ export const VocabularySupplementPanel: React.FC<VocabularySupplementPanelProps>
           <button
             type="button"
             onClick={exportCsv}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-800 hover:bg-slate-50"
+            className="inline-flex items-center gap-1.5 whitespace-nowrap text-xs font-medium text-slate-700 hover:text-slate-900 hover:underline"
           >
             <Download className="h-3.5 w-3.5" />
             导出增补词表 CSV
@@ -132,7 +132,7 @@ export const VocabularySupplementPanel: React.FC<VocabularySupplementPanelProps>
                     <span aria-hidden="true">·</span>
                     <span>{item.allowMultiple ? '允许多选' : '单选'}</span>
                   </div>
-                  <h3 className="mt-1 text-sm font-semibold text-slate-900">{item.fieldName}</h3>
+                  <h3 className="mt-1 text-[15px] font-semibold text-slate-900">{item.fieldName}</h3>
                 </div>
 
                 <div className="flex items-center gap-2">
@@ -144,10 +144,10 @@ export const VocabularySupplementPanel: React.FC<VocabularySupplementPanelProps>
                         approvalStatus: item.approvalStatus === '已核定' ? '待审核' : '已核定',
                       })
                     }
-                    className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium transition-colors ${
                       item.approvalStatus === '已核定'
-                        ? 'border-emerald-700 bg-emerald-50 text-emerald-900'
-                        : 'border-amber-500 bg-amber-50 text-amber-900 hover:bg-amber-100'
+                        ? 'text-emerald-800 hover:bg-emerald-50'
+                        : 'text-amber-800 hover:bg-amber-50'
                     }`}
                   >
                     <CheckCircle2 className="h-3.5 w-3.5" />

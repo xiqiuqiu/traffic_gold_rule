@@ -2,15 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildGoldExportPayload,
+  buildGoldV02ExportPayload,
   cleanSelectedPdfQuote,
+  collectCaseWorkItems,
   computeCaseReadiness,
+  computeEntityProgressMap,
   deriveTimeBucket,
+  filterWorkItems,
   generateNextEntityId,
   maskPiiText,
+  matchesFieldRecordBucket,
   validateFieldRecord,
 } from './goldRules';
 import { CaseDocument, FieldRecord } from '../types/gold';
 import { MASTER_FIELD_SCHEMA } from '../data/schemaCatalog';
+import { SEED_CASES } from '../data/seedCases';
 
 test('generateNextEntityId follows ACC and two-digit prefix conventions', () => {
   assert.equal(generateNextEntityId('ACC', []), 'ACC');
@@ -164,3 +170,88 @@ test('G01-G06 fact fields have single-entity ownership except D05.F075 (P or V),
     }
   }
 });
+
+test('buildGoldV02ExportPayload matches v0.2 schema structure, multi-value splitting, PII masking, and causal links', () => {
+  const case01 = SEED_CASES[0];
+  const v02 = buildGoldV02ExportPayload(case01, true);
+
+  assert.equal(v02.case_id, 'CASE-01');
+  assert.equal(v02.document_id, 'real-full-01');
+  assert.equal(v02.schema_version, '1.1-draft');
+  assert.equal(v02.ownership_version, '0.2-draft');
+  assert.equal(v02.source_hash.length, 64);
+  assert.equal(v02.subjects.length, 6);
+  assert.deepEqual(v02.subjects[1], {
+    subject_id: 'P01',
+    subject_type: 'P',
+    role: '机动车驾驶人',
+  });
+
+  // 29 records with FR-01-005 split into -A and -B => 30 facts
+  assert.equal(v02.facts.length, 30);
+
+  const f001 = v02.facts.find((f) => f.record_id === 'FR-01-001') as Record<string, unknown>;
+  assert.equal(f001.raw_value, '[REDACTED_PII]');
+  assert.equal(f001.candidate_value, '610113120260000042');
+  const f001Ev = f001.evidence as Array<{ excerpt: string }>;
+  assert.ok(f001Ev[0].excerpt.includes('6101************42'));
+
+  const splitA = v02.facts.find((f) => f.record_id === 'FR-01-005-A') as Record<string, unknown>;
+  const splitB = v02.facts.find((f) => f.record_id === 'FR-01-005-B') as Record<string, unknown>;
+  assert.equal(splitA.candidate_value, '阴');
+  assert.equal(splitB.candidate_value, '微雨');
+
+  const notMentioned = v02.facts.find((f) => f.record_id === 'FR-01-009') as Record<string, unknown>;
+  assert.equal(notMentioned.presence, 'not_mentioned');
+  assert.equal('raw_value' in notMentioned, false);
+  assert.equal('candidate_value' in notMentioned, false);
+
+  assert.equal(v02.legal_records.length, 2);
+  assert.equal(v02.legal_records[1].causal_link_status, 'explicit_linked');
+  assert.deepEqual(v02.legal_records[1].linked_violation_record_ids, ['VIO-01']);
+
+  assert.equal(v02.responsibilities.length, 1);
+  assert.equal(v02.responsibilities[0].field_code, 'D10.F060');
+  assert.deepEqual(v02.responsibilities[0].linked_cause_record_ids, ['CAU-01']);
+
+  assert.equal(v02.relations.length, 1);
+  assert.equal(v02.relations[0].field_code, 'D08.F049');
+  assert.equal(v02.relations[0].object_id, 'R01');
+  assert.equal(v02.relations[0].relation_type, '撞击路侧固定设施');
+});
+
+test('collectCaseWorkItems, filterWorkItems, and computeEntityProgressMap classify pending vs finished records accurately', () => {
+  const case06 = structuredClone(SEED_CASES[1]);
+  const allItems = collectCaseWorkItems(case06);
+
+  assert.ok(allItems.length > 0);
+  const pendingItems = filterWorkItems(allItems, { status: 'pending_action' });
+  const disputedItems = filterWorkItems(allItems, { status: 'disputed' });
+  const draftItems = filterWorkItems(allItems, { status: 'draft' });
+  const blockingItems = filterWorkItems(allItems, { status: 'blocking_or_error' });
+
+  assert.ok(pendingItems.length >= disputedItems.length);
+  assert.ok(pendingItems.length >= draftItems.length);
+  assert.ok(pendingItems.every((i) => i.needsAttention));
+  assert.ok(disputedItems.every((i) => i.reviewStatus === 'disputed'));
+  assert.ok(blockingItems.every((i) => i.hasBlockingOrError));
+
+  // Filter by entity and text query
+  const p01Disputed = filterWorkItems(allItems, {
+    status: 'disputed',
+    entityId: 'P01',
+  });
+  assert.ok(p01Disputed.every((i) => i.entityId === 'P01' && i.reviewStatus === 'disputed'));
+
+  // Entity progress summary tracks unstarted fields and pending items
+  const progressMap = computeEntityProgressMap(case06);
+  assert.ok(progressMap['ACC']);
+  assert.equal(
+    progressMap['ACC'].pendingCount,
+    allItems.filter((i) => i.entityId === 'ACC' && i.needsAttention).length,
+  );
+  assert.equal(matchesFieldRecordBucket(undefined, 'unstarted'), true);
+  assert.equal(matchesFieldRecordBucket(undefined, 'draft'), false);
+  assert.equal(matchesFieldRecordBucket(case06.fieldRecords[0], 'unstarted'), false);
+});
+

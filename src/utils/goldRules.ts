@@ -7,14 +7,20 @@ import {
 } from '../data/schemaCatalog';
 import {
   CaseDocument,
+  CaseWorkItem,
   EntityItem,
   EntityKind,
+  EntityProgressSummary,
   EventRelationItem,
+  EvidenceItem,
+  FieldFilterBucket,
   FieldRecord,
   LegalConclusionItem,
+  PresenceStatus,
   ReadinessSummary,
   ReviewStatus,
   ValidationIssue,
+  WorkItemFilterStatus,
 } from '../types/gold';
 
 export function generateNextEntityId(kind: EntityKind, existing: EntityItem[]): string {
@@ -380,6 +386,164 @@ export function buildGoldExportPayload(caseDoc: CaseDocument, maskPii: boolean) 
   };
 }
 
+export function cleanRelationEntityId(rawId: string): string {
+  const trimmed = rawId.trim();
+  const match = trimmed.match(/^(ACC|[PVEORI]\d{2})(?=[\s（(]|$)/);
+  return match ? match[1] : trimmed;
+}
+
+export function buildGoldV02ExportPayload(caseDoc: CaseDocument, maskPii: boolean) {
+  const schemaByCode = new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f]));
+  const docId = caseDoc.documentId || caseDoc.caseId.toLowerCase();
+
+  const maybeMask = (value: string, forceMask = false) => {
+    if (!maskPii) return value;
+    if (forceMask) return '[REDACTED_PII]';
+    return maskPiiText(value);
+  };
+
+  const mapEvidence = (ev: EvidenceItem) => ({
+    source_document_id: docId,
+    page: ev.page,
+    excerpt: maybeMask(ev.quote, false),
+  });
+
+  const facts: Array<Record<string, unknown>> = [];
+  for (const r of caseDoc.fieldRecords) {
+    const def = schemaByCode.get(r.fieldCode);
+    const isSensitive = Boolean(def?.isSensitivePii);
+    const forbidsValue = PRESENCE_STATUS_META[r.presenceStatus].forbidsValue;
+
+    if (forbidsValue) {
+      facts.push({
+        record_id: r.recordId,
+        field_code: r.fieldCode,
+        subject_id: r.entityId,
+        presence: r.presenceStatus,
+        claim_type: 'document_fact',
+        evidence: r.evidences.map(mapEvidence),
+        review: r.reviewStatus,
+      });
+      continue;
+    }
+
+    if (r.normalizedValues.length > 1) {
+      r.normalizedValues.forEach((val, idx) => {
+        const suffix = String.fromCharCode(65 + idx);
+        const pairedEvidences =
+          r.evidences.length === r.normalizedValues.length ? [r.evidences[idx]] : r.evidences;
+        const item: Record<string, unknown> = {
+          record_id: `${r.recordId}-${suffix}`,
+          field_code: r.fieldCode,
+          subject_id: r.entityId,
+          presence: r.presenceStatus,
+        };
+        if (r.rawValue) {
+          item.raw_value = maybeMask(r.rawValue, isSensitive && maskPii);
+        }
+        item.candidate_value = val;
+        item.claim_type = 'document_fact';
+        item.evidence = pairedEvidences.map(mapEvidence);
+        item.review = r.reviewStatus;
+        facts.push(item);
+      });
+      continue;
+    }
+
+    const singleItem: Record<string, unknown> = {
+      record_id: r.recordId,
+      field_code: r.fieldCode,
+      subject_id: r.entityId,
+      presence: r.presenceStatus,
+    };
+    if (r.rawValue) {
+      singleItem.raw_value = maybeMask(r.rawValue, isSensitive && maskPii);
+    }
+    if (r.normalizedValues[0]) {
+      singleItem.candidate_value = r.normalizedValues[0];
+    }
+    singleItem.claim_type = 'document_fact';
+    singleItem.evidence = r.evidences.map(mapEvidence);
+    singleItem.review = r.reviewStatus;
+    facts.push(singleItem);
+  }
+
+  const legal_records = caseDoc.legalConclusions
+    .filter((l) => l.category === 'violation' || l.category === 'cause')
+    .map((l) => {
+      const record: Record<string, unknown> = {
+        record_id: l.id,
+        kind: l.category,
+        field_code: l.category === 'violation' ? 'D10.F058' : 'D10.F059',
+        subject_id: l.subjectId,
+        presence: l.presenceStatus,
+      };
+      if (l.rawText) {
+        record.raw_value = maybeMask(l.rawText, false);
+      }
+      if (l.conclusionLabel) {
+        record.candidate_value = l.conclusionLabel;
+      }
+      record.causal_link_status = l.causalLinkStatus || 'unspecified';
+      record.linked_violation_record_ids = l.linkedViolationIds || [];
+      record.evidence = l.evidences.map(mapEvidence);
+      record.review = l.reviewStatus;
+      return record;
+    });
+
+  const responsibilities = caseDoc.legalConclusions
+    .filter((l) => l.category === 'liability')
+    .map((l) => {
+      const record: Record<string, unknown> = {
+        record_id: l.id,
+        field_code: 'D10.F060',
+        subject_id: l.subjectId,
+        presence: l.presenceStatus,
+      };
+      if (l.conclusionLabel) {
+        record.candidate_value = l.conclusionLabel;
+      }
+      if (l.rawText) {
+        record.raw_value = maybeMask(l.rawText, false);
+      }
+      record.linked_cause_record_ids = l.linkedCauseIds || [];
+      record.evidence = l.evidences.map(mapEvidence);
+      record.review = l.reviewStatus;
+      return record;
+    });
+
+  const relations = caseDoc.relations.map((rel) => ({
+    record_id: rel.id,
+    field_code: rel.fieldCode || 'D08.F049',
+    subject_id: cleanRelationEntityId(rel.sourceId),
+    relation_type: rel.relationType || rel.collisionMode || rel.action,
+    object_id: cleanRelationEntityId(rel.targetId),
+    event_id: rel.eventId,
+    sequence_number: rel.stageOrder,
+    presence: rel.presenceStatus || 'present',
+    evidence: rel.evidences.map(mapEvidence),
+    review: rel.reviewStatus,
+  }));
+
+  return {
+    case_id: caseDoc.caseId,
+    document_id: docId,
+    document_version: caseDoc.annotationVersion || 'v1.0',
+    source_hash: (caseDoc.sourceHashFull || caseDoc.fileSha256).replace(/^sha256:/, ''),
+    schema_version: '1.1-draft',
+    ownership_version: '0.2-draft',
+    subjects: caseDoc.entities.map((e) => ({
+      subject_id: e.id,
+      subject_type: e.kind,
+      role: e.roleLabel || e.subtitle || e.label,
+    })),
+    facts,
+    legal_records,
+    responsibilities,
+    relations,
+  };
+}
+
 export function buildReviewMarkdown(caseDoc: CaseDocument): string {
   const readiness = computeCaseReadiness(caseDoc);
   const schemaByCode = new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f]));
@@ -424,3 +588,261 @@ export function buildReviewMarkdown(caseDoc: CaseDocument): string {
 
   return lines.join('\n');
 }
+
+export function matchesWorkItemStatus(
+  item: {
+    reviewStatus: ReviewStatus;
+    presenceStatus: PresenceStatus;
+    hasBlockingOrError: boolean;
+  },
+  filter: WorkItemFilterStatus,
+): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'pending_action') {
+    return (
+      item.reviewStatus === 'draft' ||
+      item.reviewStatus === 'disputed' ||
+      item.hasBlockingOrError
+    );
+  }
+  if (filter === 'blocking_or_error') {
+    return item.hasBlockingOrError;
+  }
+  return item.reviewStatus === filter;
+}
+
+export function matchesFieldRecordBucket(
+  record: FieldRecord | undefined,
+  bucket: FieldFilterBucket,
+): boolean {
+  if (bucket === 'all') return true;
+  if (bucket === 'unstarted') return !record;
+  if (!record) return false;
+  const errors = validateFieldRecord(record).filter((i) => i.severity === 'error');
+  const hasBlockingOrError =
+    PRESENCE_STATUS_META[record.presenceStatus].blocksScoring || errors.length > 0;
+  return matchesWorkItemStatus(
+    {
+      reviewStatus: record.reviewStatus,
+      presenceStatus: record.presenceStatus,
+      hasBlockingOrError,
+    },
+    bucket,
+  );
+}
+
+export function collectCaseWorkItems(caseDoc: CaseDocument): CaseWorkItem[] {
+  const schemaByCode = new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f]));
+  const items: CaseWorkItem[] = [];
+
+  for (const r of caseDoc.fieldRecords) {
+    const def = schemaByCode.get(r.fieldCode);
+    const errors = validateFieldRecord(r).filter((i) => i.severity === 'error');
+    const isBlockingPresence = PRESENCE_STATUS_META[r.presenceStatus].blocksScoring;
+    const hasBlockingOrError = isBlockingPresence || errors.length > 0;
+    const needsAttention =
+      r.reviewStatus === 'draft' || r.reviewStatus === 'disputed' || hasBlockingOrError;
+
+    const reasons: string[] = [];
+    if (r.reviewStatus === 'disputed') reasons.push('争议中，待裁定');
+    else if (r.reviewStatus === 'draft') reasons.push('草稿，待复核');
+    if (isBlockingPresence) {
+      reasons.push(`阻断状态(${PRESENCE_STATUS_META[r.presenceStatus].label})`);
+    }
+    if (errors.length > 0) reasons.push(errors.map((e) => e.message).join('；'));
+
+    const valuePreview =
+      r.normalizedValues.length > 0
+        ? r.normalizedValues.join(' / ')
+        : r.rawValue || PRESENCE_STATUS_META[r.presenceStatus].label;
+
+    items.push({
+      id: `field:${r.entityId}:${r.fieldCode}:${r.recordId}`,
+      itemType: 'field',
+      entityId: r.entityId,
+      code: r.fieldCode,
+      title: def?.fieldName ?? r.fieldCode,
+      presenceStatus: r.presenceStatus,
+      reviewStatus: r.reviewStatus,
+      hasBlockingOrError,
+      needsAttention,
+      issueSummary:
+        reasons.length > 0
+          ? reasons.join('；')
+          : REVIEW_STATUS_META[r.reviewStatus].label,
+      valuePreview,
+      notePreview: r.disputeReason || r.adjudicatorNote || '',
+      targetTab: 'fields',
+      fieldCode: r.fieldCode,
+    });
+  }
+
+  for (const l of caseDoc.legalConclusions) {
+    const errors = validateLegalConclusion(l).filter((i) => i.severity === 'error');
+    const isBlockingPresence = PRESENCE_STATUS_META[l.presenceStatus].blocksScoring;
+    const hasBlockingOrError = isBlockingPresence || errors.length > 0;
+    const needsAttention =
+      l.reviewStatus === 'draft' || l.reviewStatus === 'disputed' || hasBlockingOrError;
+
+    const fieldCode =
+      l.category === 'violation'
+        ? 'D10.F058'
+        : l.category === 'cause'
+          ? 'D10.F059'
+          : 'D10.F060';
+    const catLabel =
+      l.category === 'violation'
+        ? '认定违法行为'
+        : l.category === 'cause'
+          ? '认定事故原因'
+          : '事故责任划分';
+
+    const reasons: string[] = [];
+    if (l.reviewStatus === 'disputed') reasons.push('争议中，待裁定');
+    else if (l.reviewStatus === 'draft') reasons.push('草稿，待复核');
+    if (isBlockingPresence) {
+      reasons.push(`阻断状态(${PRESENCE_STATUS_META[l.presenceStatus].label})`);
+    }
+    if (errors.length > 0) reasons.push(errors.map((e) => e.message).join('；'));
+
+    items.push({
+      id: `legal:${l.id}`,
+      itemType: 'legal',
+      entityId: l.subjectId || 'ACC',
+      code: fieldCode,
+      title: `${catLabel} (${l.id})`,
+      presenceStatus: l.presenceStatus,
+      reviewStatus: l.reviewStatus,
+      hasBlockingOrError,
+      needsAttention,
+      issueSummary:
+        reasons.length > 0
+          ? reasons.join('；')
+          : REVIEW_STATUS_META[l.reviewStatus].label,
+      valuePreview: l.conclusionLabel || l.rawText || PRESENCE_STATUS_META[l.presenceStatus].label,
+      notePreview: l.disputeReason || l.adjudicatorNote || '',
+      targetTab: 'legal',
+      legalOrRelId: l.id,
+      relationSubTab: 'legal',
+    });
+  }
+
+  for (const rel of caseDoc.relations) {
+    const presenceStatus = rel.presenceStatus || 'present';
+    const errors = validateRelation(rel).filter((i) => i.severity === 'error');
+    const isBlockingPresence = PRESENCE_STATUS_META[presenceStatus].blocksScoring;
+    const hasBlockingOrError = isBlockingPresence || errors.length > 0;
+    const needsAttention =
+      rel.reviewStatus === 'draft' || rel.reviewStatus === 'disputed' || hasBlockingOrError;
+
+    const reasons: string[] = [];
+    if (rel.reviewStatus === 'disputed') reasons.push('争议中，待裁定');
+    else if (rel.reviewStatus === 'draft') reasons.push('草稿，待复核');
+    if (isBlockingPresence) {
+      reasons.push(`阻断状态(${PRESENCE_STATUS_META[presenceStatus].label})`);
+    }
+    if (errors.length > 0) reasons.push(errors.map((e) => e.message).join('；'));
+
+    items.push({
+      id: `relation:${rel.id}`,
+      itemType: 'relation',
+      entityId: rel.eventId || 'E01',
+      code: rel.fieldCode || 'D08.F049',
+      title: `顺序 #${rel.stageOrder} 碰撞关系 (${rel.id})`,
+      presenceStatus,
+      reviewStatus: rel.reviewStatus,
+      hasBlockingOrError,
+      needsAttention,
+      issueSummary:
+        reasons.length > 0
+          ? reasons.join('；')
+          : REVIEW_STATUS_META[rel.reviewStatus].label,
+      valuePreview: `${cleanRelationEntityId(rel.sourceId)} → ${rel.relationType || rel.action} → ${cleanRelationEntityId(rel.targetId)}`,
+      notePreview: rel.disputeReason || rel.adjudicatorNote || '',
+      targetTab: 'legal',
+      legalOrRelId: rel.id,
+      relationSubTab: 'relations',
+    });
+  }
+
+  return items;
+}
+
+export function filterWorkItems(
+  items: CaseWorkItem[],
+  filter: {
+    status?: WorkItemFilterStatus;
+    itemType?: 'all' | 'field' | 'legal' | 'relation';
+    entityId?: 'ALL' | string;
+    query?: string;
+  },
+): CaseWorkItem[] {
+  const status = filter.status || 'all';
+  const itemType = filter.itemType || 'all';
+  const entityId = filter.entityId || 'ALL';
+  const q = (filter.query || '').trim().toLowerCase();
+
+  return items.filter((item) => {
+    if (!matchesWorkItemStatus(item, status)) return false;
+    if (itemType !== 'all' && item.itemType !== itemType) return false;
+    if (entityId !== 'ALL' && item.entityId !== entityId) return false;
+    if (q) {
+      const hay = `${item.entityId} ${item.code} ${item.title} ${item.valuePreview} ${item.issueSummary} ${item.notePreview}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+export function computeEntityProgressMap(
+  caseDoc: CaseDocument,
+): Record<string, EntityProgressSummary> {
+  const workItems = collectCaseWorkItems(caseDoc);
+  const result: Record<string, EntityProgressSummary> = {};
+
+  for (const entity of caseDoc.entities) {
+    const entityItems = workItems.filter((item) => item.entityId === entity.id);
+    const applicableDefs = MASTER_FIELD_SCHEMA.filter(
+      (def) => !def.isLegalOrRelation && def.applicableKinds.includes(entity.kind),
+    );
+    const recordedCodes = new Set(
+      caseDoc.fieldRecords.filter((r) => r.entityId === entity.id).map((r) => r.fieldCode),
+    );
+    const applicableUnstartedCount = applicableDefs.filter(
+      (def) => !recordedCodes.has(def.fieldCode),
+    ).length;
+
+    let draftCount = 0;
+    let disputedCount = 0;
+    let checkedCount = 0;
+    let specialistCount = 0;
+    let errorOrBlockingCount = 0;
+    let pendingCount = 0;
+
+    for (const item of entityItems) {
+      if (item.reviewStatus === 'draft') draftCount += 1;
+      else if (item.reviewStatus === 'disputed') disputedCount += 1;
+      else if (item.reviewStatus === 'checked') checkedCount += 1;
+      else if (item.reviewStatus === 'specialist_review') specialistCount += 1;
+
+      if (item.hasBlockingOrError) errorOrBlockingCount += 1;
+      if (item.needsAttention) pendingCount += 1;
+    }
+
+    result[entity.id] = {
+      entityId: entity.id,
+      totalItems: entityItems.length,
+      draftCount,
+      disputedCount,
+      checkedCount,
+      specialistCount,
+      errorOrBlockingCount,
+      pendingCount,
+      applicableTotalCount: applicableDefs.length,
+      applicableUnstartedCount,
+    };
+  }
+
+  return result;
+}
+

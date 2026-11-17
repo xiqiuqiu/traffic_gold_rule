@@ -17,22 +17,27 @@ import { SEED_CASES } from './data/seedCases';
 import {
   AuditLogEntry,
   CaseDocument,
+  CaseWorkItem,
   EntityKind,
   EventRelationItem,
+  FieldFilterBucket,
   FieldRecord,
   LegalConclusionItem,
   UserRole,
   VocabularySupplementItem,
+  WorkItemFilterStatus,
 } from './types/gold';
 import {
+  collectCaseWorkItems,
   computeCaseReadiness,
+  computeEntityProgressMap,
   generateNextEntityId,
   validateFieldRecord,
 } from './utils/goldRules';
 
 type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export';
 
-const STORAGE_CASES_KEY = 'gold_workbench_cases_v1';
+const STORAGE_CASES_KEY = 'gold_workbench_cases_v2';
 const STORAGE_SUPPLEMENTS_KEY = 'gold_workbench_supplements_v1';
 
 function loadInitialCases(): CaseDocument[] {
@@ -73,6 +78,15 @@ export default function App() {
   const [selectedPdfQuote, setSelectedPdfQuote] = useState<{ page: number; quote: string } | null>(null);
   const [focusedFieldKey, setFocusedFieldKey] = useState<string | null>(null);
   const [focusedLegalOrRelId, setFocusedLegalOrRelId] = useState<{ id: string; label: string } | null>(null);
+  const [queueStatusFilter, setQueueStatusFilter] = useState<WorkItemFilterStatus>('pending_action');
+  const [fieldBucketRequest, setFieldBucketRequest] = useState<{
+    bucket: FieldFilterBucket;
+    nonce: number;
+  } | null>(null);
+  const [legalFocusRequest, setLegalFocusRequest] = useState<{
+    subTab: 'legal' | 'relations';
+    nonce: number;
+  } | null>(null);
   const [manualOpen, setManualOpen] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -120,6 +134,11 @@ export default function App() {
   );
 
   const readiness = useMemo(() => computeCaseReadiness(activeCase), [activeCase]);
+  const entityProgressMap = useMemo(() => computeEntityProgressMap(activeCase), [activeCase]);
+  const pendingItemsCount = useMemo(
+    () => collectCaseWorkItems(activeCase).filter((item) => item.needsAttention).length,
+    [activeCase],
+  );
 
   const recordCountByEntity = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -167,7 +186,10 @@ export default function App() {
     const nextId = generateNextEntityId(kind, activeCase.entities);
     updateActiveCase((prev) => ({
       ...prev,
-      entities: [...prev.entities, { id: nextId, kind, label, subtitle }],
+      entities: [
+        ...prev.entities,
+        { id: nextId, kind, label, subtitle, roleLabel: subtitle || label },
+      ],
       auditLog: [
         makeAuditEntry('登记对象', nextId, `${label}${subtitle ? ` (${subtitle})` : ''}`),
         ...prev.auditLog,
@@ -289,6 +311,88 @@ export default function App() {
     });
   };
 
+  const handleOpenAcceptanceWithStatus = (status: WorkItemFilterStatus) => {
+    setQueueStatusFilter(status);
+    setActiveTab('export');
+  };
+
+  const handleJumpToWorkItem = (item: CaseWorkItem) => {
+    if (item.targetTab === 'fields' && item.fieldCode) {
+      setActiveTab('fields');
+      setSelectedEntityId(item.entityId);
+      setFocusedLegalOrRelId(null);
+      setFocusedFieldKey(`${item.entityId}:${item.fieldCode}`);
+      setFieldBucketRequest({ bucket: 'all', nonce: Date.now() });
+      return;
+    }
+    if (item.targetTab === 'legal' && item.legalOrRelId) {
+      setActiveTab('legal');
+      setFocusedFieldKey(null);
+      setFocusedLegalOrRelId({ id: item.legalOrRelId, label: item.title });
+      setLegalFocusRequest({
+        subTab: item.relationSubTab || 'legal',
+        nonce: Date.now(),
+      });
+    }
+  };
+
+  const handleJumpToEntityUnstarted = (entityId: string) => {
+    setActiveTab('fields');
+    setSelectedEntityId(entityId);
+    setFocusedFieldKey(null);
+    setFocusedLegalOrRelId(null);
+    setFieldBucketRequest({ bucket: 'unstarted', nonce: Date.now() });
+  };
+
+  const handleQuickTransitionItem = (
+    item: CaseWorkItem,
+    nextStatus: 'checked' | 'specialist_review',
+  ) => {
+    const actionLabel = nextStatus === 'checked' ? '队列快捷复核通过' : '队列快捷完成裁定';
+    if (item.itemType === 'field' && item.fieldCode) {
+      const existing = activeCase.fieldRecords.find(
+        (r) => r.entityId === item.entityId && r.fieldCode === item.fieldCode,
+      );
+      if (!existing) return;
+      handleUpsertFieldRecord(
+        {
+          ...existing,
+          reviewStatus: nextStatus,
+          disputeReason: nextStatus === 'checked' ? '' : existing.disputeReason,
+          updatedByRole: userRole,
+          updatedAt: new Date().toISOString(),
+        },
+        `${actionLabel} ${item.entityId}.${item.fieldCode}`,
+      );
+      return;
+    }
+    if (item.itemType === 'legal' && item.legalOrRelId) {
+      const existing = activeCase.legalConclusions.find((l) => l.id === item.legalOrRelId);
+      if (!existing) return;
+      handleSaveLegalItem(
+        {
+          ...existing,
+          reviewStatus: nextStatus,
+          disputeReason: nextStatus === 'checked' ? '' : existing.disputeReason,
+        },
+        `${actionLabel} ${existing.id}`,
+      );
+      return;
+    }
+    if (item.itemType === 'relation' && item.legalOrRelId) {
+      const existing = activeCase.relations.find((r) => r.id === item.legalOrRelId);
+      if (!existing) return;
+      handleSaveRelationItem(
+        {
+          ...existing,
+          reviewStatus: nextStatus,
+          disputeReason: nextStatus === 'checked' ? '' : existing.disputeReason,
+        },
+        `${actionLabel} ${existing.id}`,
+      );
+    }
+  };
+
   // Determine active target label for the left PDF clipboard bar
   const activeTargetInfo = useMemo(() => {
     if (activeTab === 'fields') {
@@ -376,13 +480,14 @@ export default function App() {
     if (!file) return;
     const blobUrl = URL.createObjectURL(file);
     let shaShort = 'local-file';
+    let shaFull = '';
     try {
       const buf = await file.arrayBuffer();
       const digest = await crypto.subtle.digest('SHA-256', buf);
-      shaShort = Array.from(new Uint8Array(digest))
-        .slice(0, 8)
+      shaFull = Array.from(new Uint8Array(digest))
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('');
+      shaShort = shaFull.slice(0, 16);
     } catch {
       // Ignore crypto fallback
     }
@@ -391,12 +496,14 @@ export default function App() {
     const newId = `CASE-LOCAL-${String(nextNum).padStart(2, '0')}`;
     const newCase: CaseDocument = {
       caseId: newId,
+      documentId: newId.toLowerCase(),
       title: `${newId} · ${file.name.replace(/\.pdf$/i, '')}`,
       pilotCode: '新增',
       scenarioSummary: '本地导入的受控测试材料（仅保存在当前浏览器会话内存中，不上传服务器）。',
       pdfUrl: blobUrl,
       sourceFilename: file.name,
       fileSha256: `sha256:${shaShort}`,
+      sourceHashFull: shaFull || undefined,
       pageCount: 1,
       manualVersion: '试行版 · 首批6份',
       annotationVersion: 'v1.0',
@@ -404,7 +511,15 @@ export default function App() {
       annotatorName: '第一标注人',
       reviewerName: '第二复核人',
       adjudicatorName: '',
-      entities: [{ id: 'ACC', kind: 'ACC', label: '新建事故材料', subtitle: file.name }],
+      entities: [
+        {
+          id: 'ACC',
+          kind: 'ACC',
+          label: '新建事故材料',
+          subtitle: file.name,
+          roleLabel: '事故主体',
+        },
+      ],
       fieldRecords: [],
       legalConclusions: [],
       relations: [],
@@ -483,7 +598,7 @@ export default function App() {
               id="case-selector"
               value={activeCase.caseId}
               onChange={(e) => setActiveCaseId(e.target.value)}
-              className="rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-900"
+              className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-900"
             >
               {cases.map((c) => (
                 <option key={c.caseId} value={c.caseId}>
@@ -504,13 +619,13 @@ export default function App() {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900"
           >
             <Upload className="h-3.5 w-3.5" aria-hidden="true" />
             导入本地 PDF
           </button>
 
-          <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-white p-0.5">
+          <div className="flex items-center gap-0.5 rounded-md bg-slate-200/70 p-0.5">
             {(['annotator', 'reviewer', 'adjudicator'] as UserRole[]).map((role) => (
               <button
                 key={role}
@@ -518,7 +633,7 @@ export default function App() {
                 onClick={() => setUserRole(role)}
                 className={`whitespace-nowrap rounded px-2.5 py-1 text-xs font-medium transition-colors ${
                   userRole === role
-                    ? 'bg-slate-900 text-white'
+                    ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
@@ -531,24 +646,26 @@ export default function App() {
         <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
           <span className="font-mono-tabular">
             {activeCase.caseId} · {activeCase.pageCount} 页 · 草稿{' '}
-            {readiness.statusCounts.draft} / 已复核 {readiness.statusCounts.checked} / 争议{' '}
-            {readiness.statusCounts.disputed}
+            {readiness.statusCounts.draft} / 争议 {readiness.statusCounts.disputed} / 已复核{' '}
+            {readiness.statusCounts.checked} / 裁定 {readiness.statusCounts.specialist_review}
           </span>
           <span aria-hidden="true">·</span>
-          <span
-            className={
-              readiness.eligibleForScoring
-                ? 'font-medium text-emerald-700'
-                : 'font-medium text-amber-700'
+          <button
+            type="button"
+            onClick={() =>
+              handleOpenAcceptanceWithStatus(pendingItemsCount > 0 ? 'pending_action' : 'all')
             }
+            className={`inline-flex items-center gap-1 whitespace-nowrap font-medium underline-offset-2 hover:underline ${
+              pendingItemsCount > 0 ? 'text-amber-800' : 'text-emerald-800'
+            }`}
           >
-            {readiness.eligibleForScoring ? '可进入评分' : '待复核或门禁未全过'}
-          </span>
+            {pendingItemsCount > 0 ? `待处理 ${pendingItemsCount} 项（去验收排查）` : '全部已处理'}
+          </button>
 
           <button
             type="button"
             onClick={() => setManualOpen(true)}
-            className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-100"
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900"
           >
             <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
             标注手册
@@ -558,7 +675,7 @@ export default function App() {
             type="button"
             onClick={handleResetDemo}
             title="重置为初始授权样本状态"
-            className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-900"
+            className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-200/70 hover:text-slate-900"
           >
             <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
             重置样本
@@ -595,7 +712,9 @@ export default function App() {
               <div className="flex flex-wrap items-center gap-2 text-slate-600">
                 <strong className="text-slate-900">步骤 1 · 材料身份与角色规则</strong>
                 <span aria-hidden="true">·</span>
-                <span className="font-mono-tabular">版本 {activeCase.annotationVersion}</span>
+                <span className="font-mono-tabular">
+                  {activeCase.documentId || activeCase.caseId.toLowerCase()} ({activeCase.annotationVersion})
+                </span>
                 <span aria-hidden="true">·</span>
                 <span className="font-mono-tabular">{activeCase.fileSha256}</span>
                 <span aria-hidden="true">·</span>
@@ -618,6 +737,7 @@ export default function App() {
                 onAddEntity={handleAddEntity}
                 onRemoveEntity={handleRemoveEntity}
                 recordCountByEntity={recordCountByEntity}
+                progressByEntity={entityProgressMap}
               />
               <FieldAnnotationPanel
                 caseDoc={activeCase}
@@ -643,6 +763,7 @@ export default function App() {
                 onSaveRelationItem={handleSaveRelationItem}
                 onDeleteRelationItem={handleDeleteRelationItem}
                 onOpenLegalTab={() => setActiveTab('legal')}
+                externalBucketRequest={fieldBucketRequest}
               />
             </>
           )}
@@ -659,6 +780,7 @@ export default function App() {
               onDeleteLegalItem={handleDeleteLegalItem}
               onSaveRelationItem={handleSaveRelationItem}
               onDeleteRelationItem={handleDeleteRelationItem}
+              externalFocusRequest={legalFocusRequest}
             />
           )}
 
@@ -677,6 +799,12 @@ export default function App() {
             <AcceptanceExportPanel
               caseDoc={activeCase}
               allCases={cases}
+              userRole={userRole}
+              statusFilter={queueStatusFilter}
+              onStatusFilterChange={setQueueStatusFilter}
+              onJumpToItem={handleJumpToWorkItem}
+              onJumpToEntityUnstarted={handleJumpToEntityUnstarted}
+              onQuickTransitionItem={handleQuickTransitionItem}
               onToggleChecklistItem={(checkId, checked) =>
                 updateActiveCase((prev) => ({
                   ...prev,
