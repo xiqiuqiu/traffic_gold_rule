@@ -153,7 +153,52 @@ export function validateLegalConclusion(item: LegalConclusionItem): ValidationIs
     }
   }
 
+  if (
+    item.category === 'cause' &&
+    (item.causalLinkStatus === 'explicit_linked' || item.causalLinkStatus === 'multiple_mixed') &&
+    (!item.linkedViolationIds || item.linkedViolationIds.length === 0)
+  ) {
+    issues.push({
+      code: 'MISSING_LINKED_VIOLATION',
+      severity: 'warning',
+      message: '已标记“明确关联违法 / 多因混合”，请勾选或补录对应的违法行为记录',
+    });
+  }
+
+  if (
+    item.category === 'liability' &&
+    item.presenceStatus === 'present' &&
+    item.conclusionLabel.trim() &&
+    item.conclusionLabel.trim() !== '无责任' &&
+    (!item.linkedCauseIds || item.linkedCauseIds.length === 0)
+  ) {
+    issues.push({
+      code: 'MISSING_LINKED_CAUSE',
+      severity: 'warning',
+      message: '有责结论建议关联或补录对应的认定事故原因记录',
+    });
+  }
+
   return issues;
+}
+
+const LEGAL_CATEGORY_ORDER: Record<LegalConclusionItem['category'], number> = {
+  violation: 0,
+  cause: 1,
+  liability: 2,
+};
+
+export function sortLegalConclusionsByChain(
+  items: LegalConclusionItem[],
+): LegalConclusionItem[] {
+  return items
+    .map((item, idx) => ({ item, idx }))
+    .sort((a, b) => {
+      const catDiff =
+        LEGAL_CATEGORY_ORDER[a.item.category] - LEGAL_CATEGORY_ORDER[b.item.category];
+      return catDiff !== 0 ? catDiff : a.idx - b.idx;
+    })
+    .map((entry) => entry.item);
 }
 
 export function validateRelation(item: EventRelationItem): ValidationIssue[] {
@@ -845,4 +890,38 @@ export function computeEntityProgressMap(
 
   return result;
 }
+
+export function computeEntityWorkbenchStats(
+  caseDoc: CaseDocument,
+  entityId: string,
+): Record<FieldFilterBucket, number> {
+  const entity = caseDoc.entities.find((e) => e.id === entityId);
+  const applicableDefs = entity
+    ? MASTER_FIELD_SCHEMA.filter(
+        (def) => !def.isLegalOrRelation && def.applicableKinds.includes(entity.kind),
+      )
+    : [];
+  const recordedByCode = new Map(
+    caseDoc.fieldRecords
+      .filter((r) => r.entityId === entityId)
+      .map((r) => [r.fieldCode, r]),
+  );
+
+  const progress = computeEntityProgressMap(caseDoc)[entityId];
+  const counts: Record<FieldFilterBucket, number> = {
+    all:
+      (progress?.totalItems ?? 0) +
+      applicableDefs.filter((def) => !recordedByCode.has(def.fieldCode)).length,
+    unstarted: applicableDefs.filter((def) => !recordedByCode.has(def.fieldCode)).length,
+    pending_action: progress?.pendingCount ?? 0,
+    draft: progress?.draftCount ?? 0,
+    disputed: progress?.disputedCount ?? 0,
+    blocking_or_error: progress?.errorOrBlockingCount ?? 0,
+    checked: progress?.checkedCount ?? 0,
+    specialist_review: progress?.specialistCount ?? 0,
+  };
+
+  return counts;
+}
+
 

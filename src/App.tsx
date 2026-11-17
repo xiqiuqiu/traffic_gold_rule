@@ -37,7 +37,7 @@ import {
 
 type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export';
 
-const STORAGE_CASES_KEY = 'gold_workbench_cases_v2';
+const STORAGE_CASES_KEY = 'gold_workbench_cases_v3';
 const STORAGE_SUPPLEMENTS_KEY = 'gold_workbench_supplements_v1';
 
 function loadInitialCases(): CaseDocument[] {
@@ -142,21 +142,14 @@ export default function App() {
 
   const recordCountByEntity = useMemo(() => {
     const counts: Record<string, number> = {};
-    for (const r of activeCase.fieldRecords) {
-      counts[r.entityId] = (counts[r.entityId] || 0) + 1;
-    }
-    for (const l of activeCase.legalConclusions) {
-      if (l.subjectId) {
-        counts[l.subjectId] = (counts[l.subjectId] || 0) + 1;
-      }
-    }
-    for (const rel of activeCase.relations) {
-      if (rel.eventId) {
-        counts[rel.eventId] = (counts[rel.eventId] || 0) + 1;
-      }
+    for (const [id, prog] of Object.entries(entityProgressMap)) {
+      counts[id] = prog.totalItems;
     }
     return counts;
-  }, [activeCase.fieldRecords, activeCase.legalConclusions, activeCase.relations]);
+  }, [entityProgressMap]);
+
+  const totalCaseItemsCount =
+    readiness.totalFieldRecords + readiness.totalLegalItems + readiness.totalRelations;
 
   const updateActiveCase = (updater: (prev: CaseDocument) => CaseDocument) => {
     setCases((prevList) =>
@@ -645,9 +638,9 @@ export default function App() {
 
         <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
           <span className="font-mono-tabular">
-            {activeCase.caseId} · {activeCase.pageCount} 页 · 草稿{' '}
+            {activeCase.caseId} · {activeCase.pageCount} 页 · 全案 {totalCaseItemsCount} 项（草稿{' '}
             {readiness.statusCounts.draft} / 争议 {readiness.statusCounts.disputed} / 已复核{' '}
-            {readiness.statusCounts.checked} / 裁定 {readiness.statusCounts.specialist_review}
+            {readiness.statusCounts.checked} / 裁定 {readiness.statusCounts.specialist_review}）
           </span>
           <span aria-hidden="true">·</span>
           <button

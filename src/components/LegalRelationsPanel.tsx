@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, Check, Link2, Plus, Trash2, XCircle } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Check, Link2, Plus, Trash2, XCircle } from 'lucide-react';
 import { PRESENCE_STATUS_META } from '../data/schemaCatalog';
 import {
   CaseDocument,
@@ -14,6 +14,7 @@ import {
 import {
   cleanRelationEntityId,
   matchesWorkItemStatus,
+  sortLegalConclusionsByChain,
   validateLegalConclusion,
   validateRelation,
 } from '../utils/goldRules';
@@ -193,19 +194,21 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
   const filteredLegal = useMemo(
     () =>
-      categoryFilteredLegal.filter((item) => {
-        const hasBlockingOrError =
-          PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
-          validateLegalConclusion(item).some((i) => i.severity === 'error');
-        return matchesWorkItemStatus(
-          {
-            reviewStatus: item.reviewStatus,
-            presenceStatus: item.presenceStatus,
-            hasBlockingOrError,
-          },
-          statusFilter,
-        );
-      }),
+      sortLegalConclusionsByChain(
+        categoryFilteredLegal.filter((item) => {
+          const hasBlockingOrError =
+            PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
+            validateLegalConclusion(item).some((i) => i.severity === 'error');
+          return matchesWorkItemStatus(
+            {
+              reviewStatus: item.reviewStatus,
+              presenceStatus: item.presenceStatus,
+              hasBlockingOrError,
+            },
+            statusFilter,
+          );
+        }),
+      ),
     [categoryFilteredLegal, statusFilter],
   );
 
@@ -380,6 +383,98 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
               issues.some((i) => i.severity === 'error');
             const focused = activeTargetId === item.id;
+            const prioritizedViolations = [...violationRecords].sort((a, b) => {
+              const aSame = a.subjectId === item.subjectId ? 0 : 1;
+              const bSame = b.subjectId === item.subjectId ? 0 : 1;
+              return aSame - bSame;
+            });
+            const prioritizedCauses = [...causeRecords].sort((a, b) => {
+              const aSame = a.subjectId === item.subjectId ? 0 : 1;
+              const bSame = b.subjectId === item.subjectId ? 0 : 1;
+              return aSame - bSame;
+            });
+            const referencingCauses =
+              item.category === 'violation'
+                ? causeRecords.filter((c) => (c.linkedViolationIds || []).includes(item.id))
+                : [];
+            const handleCreateLinkedViolation = () => {
+              const newVioId = `VIO-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+              const newVio: LegalConclusionItem = {
+                id: newVioId,
+                category: 'violation',
+                subjectId: item.subjectId,
+                eventId: item.eventId || events[0]?.id || '',
+                presenceStatus: 'present',
+                rawText: '',
+                lawArticle: '',
+                conclusionLabel: '',
+                causalLinkStatus: 'explicit_linked',
+                linkedViolationIds: [],
+                evidences: selectedPdfQuote
+                  ? [
+                      {
+                        id: `EV-${Date.now().toString(36)}`,
+                        page: selectedPdfQuote.page,
+                        quote: selectedPdfQuote.quote,
+                      },
+                    ]
+                  : [],
+                reviewStatus: 'draft',
+                disputeReason: '',
+                adjudicatorNote: '',
+              };
+              onSaveLegalItem(newVio, `补录并关联违法行为 ${newVioId}`);
+              const nextLinked = Array.from(
+                new Set([...(item.linkedViolationIds || []), newVioId]),
+              );
+              const nextCausalStatus: CausalLinkStatus =
+                !item.causalLinkStatus || item.causalLinkStatus === 'unspecified'
+                  ? 'explicit_linked'
+                  : item.causalLinkStatus;
+              onSaveLegalItem({
+                ...item,
+                causalLinkStatus: nextCausalStatus,
+                linkedViolationIds: nextLinked,
+              });
+              onFocusTarget(newVioId, `${CATEGORY_LABELS.violation.title} (${newVioId})`);
+            };
+            const handleCreateLinkedCause = (fromViolation?: LegalConclusionItem) => {
+              const newCauId = `CAU-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+              const newCau: LegalConclusionItem = {
+                id: newCauId,
+                category: 'cause',
+                subjectId: item.subjectId,
+                eventId: item.eventId || events[0]?.id || '',
+                presenceStatus: 'present',
+                rawText: '',
+                lawArticle: '',
+                conclusionLabel: '',
+                causalLinkStatus: fromViolation ? 'explicit_linked' : 'unspecified',
+                linkedViolationIds: fromViolation ? [fromViolation.id] : [],
+                evidences: selectedPdfQuote
+                  ? [
+                      {
+                        id: `EV-${Date.now().toString(36)}`,
+                        page: selectedPdfQuote.page,
+                        quote: selectedPdfQuote.quote,
+                      },
+                    ]
+                  : [],
+                reviewStatus: 'draft',
+                disputeReason: '',
+                adjudicatorNote: '',
+              };
+              onSaveLegalItem(newCau, `补录并关联认定原因 ${newCauId}`);
+              if (item.category === 'liability') {
+                onSaveLegalItem({
+                  ...item,
+                  linkedCauseIds: Array.from(
+                    new Set([...(item.linkedCauseIds || []), newCauId]),
+                  ),
+                });
+              }
+              onFocusTarget(newCauId, `${CATEGORY_LABELS.cause.title} (${newCauId})`);
+            };
 
             return (
               <div
@@ -523,16 +618,80 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         ))}
                       </select>
                     </div>
-                    {item.category === 'cause' && (
+                    {item.category === 'violation' && (
                       <div className="sm:col-span-7">
-                        <span className="mb-1 block text-xs font-medium text-slate-700">
-                          关联违法记录 (linked_violation_record_ids)
-                        </span>
-                        {violationRecords.length === 0 ? (
-                          <p className="text-xs text-slate-400">暂无可关联的违法行为记录</p>
+                        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-slate-700">
+                            被认定原因引用
+                          </span>
+                          {item.presenceStatus === 'present' && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCreateLinkedCause(item);
+                              }}
+                              className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
+                            >
+                              <Plus className="h-3 w-3" />
+                              基于此违法补录原因
+                            </button>
+                          )}
+                        </div>
+                        {referencingCauses.length === 0 ? (
+                          <p className="text-xs text-slate-400">
+                            {item.presenceStatus === 'explicit_negative'
+                              ? '明确无违法，不产生因果引用'
+                              : '尚未被认定原因记录引用'}
+                          </p>
                         ) : (
                           <div className="flex flex-wrap gap-1.5">
-                            {violationRecords.map((vio) => {
+                            {referencingCauses.map((cau) => (
+                              <button
+                                key={cau.id}
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onFocusTarget(
+                                    cau.id,
+                                    `${CATEGORY_LABELS.cause.title} (${cau.id})`,
+                                  );
+                                }}
+                                className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-900 hover:bg-blue-100"
+                              >
+                                <span className="font-mono-tabular">{cau.id}</span>
+                                <span>({cau.conclusionLabel || '已关联'})</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {item.category === 'cause' && (
+                      <div className="sm:col-span-7">
+                        <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-medium text-slate-700">
+                            关联违法记录 (linked_violation_record_ids)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleCreateLinkedViolation();
+                            }}
+                            className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
+                          >
+                            <Plus className="h-3 w-3" />
+                            补录违法行为并关联
+                          </button>
+                        </div>
+                        {prioritizedViolations.length === 0 ? (
+                          <p className="text-xs text-slate-400">
+                            暂无可关联的违法行为记录，可点击右上「补录违法行为并关联」
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap gap-1.5">
+                            {prioritizedViolations.map((vio) => {
                               const linked = (item.linkedViolationIds || []).includes(vio.id);
                               return (
                                 <label
@@ -551,7 +710,17 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                                       const next = e.target.checked
                                         ? [...current, vio.id]
                                         : current.filter((x) => x !== vio.id);
-                                      onSaveLegalItem({ ...item, linkedViolationIds: next });
+                                      const nextCausalStatus: CausalLinkStatus =
+                                        e.target.checked &&
+                                        (!item.causalLinkStatus ||
+                                          item.causalLinkStatus === 'unspecified')
+                                          ? 'explicit_linked'
+                                          : item.causalLinkStatus || 'unspecified';
+                                      onSaveLegalItem({
+                                        ...item,
+                                        causalLinkStatus: nextCausalStatus,
+                                        linkedViolationIds: next,
+                                      });
                                     }}
                                     className="h-3 w-3 accent-blue-700"
                                   />
@@ -569,14 +738,29 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                   </div>
                 ) : (
                   <div className="mt-3 rounded-md border border-slate-200 bg-slate-50/70 p-2.5">
-                    <span className="mb-1 block text-xs font-medium text-slate-700">
-                      责任依据的认定原因 (linked_cause_record_ids)
-                    </span>
-                    {causeRecords.length === 0 ? (
-                      <p className="text-xs text-slate-500">暂无可关联的认定事故原因记录</p>
+                    <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-slate-700">
+                        责任依据的认定原因 (linked_cause_record_ids)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCreateLinkedCause();
+                        }}
+                        className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
+                      >
+                        <Plus className="h-3 w-3" />
+                        补录认定原因并关联
+                      </button>
+                    </div>
+                    {prioritizedCauses.length === 0 ? (
+                      <p className="text-xs text-slate-500">
+                        暂无可关联的认定事故原因记录，若文书认定有责可点击右上「补录认定原因并关联」
+                      </p>
                     ) : (
                       <div className="flex flex-wrap gap-1.5">
-                        {causeRecords.map((cau) => {
+                        {prioritizedCauses.map((cau) => {
                           const linked = (item.linkedCauseIds || []).includes(cau.id);
                           return (
                             <label
@@ -709,7 +893,21 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                 </div>
 
                 {issues.length > 0 && (
-                  <p className="mt-2 text-xs text-red-700">{issues.map((i) => i.message).join('；')}</p>
+                  <div className="mt-2 flex flex-col gap-1">
+                    {issues.map((iss) => (
+                      <div
+                        key={iss.code}
+                        className={`flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs ${
+                          iss.severity === 'error'
+                            ? 'border-red-200 bg-red-50 text-red-800'
+                            : 'border-amber-200 bg-amber-50 text-amber-900'
+                        }`}
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                        <span>{iss.message}</span>
+                      </div>
+                    ))}
+                  </div>
                 )}
 
                 {/* Role actions */}

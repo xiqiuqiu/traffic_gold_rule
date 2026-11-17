@@ -31,8 +31,11 @@ import {
 } from '../types/gold';
 import {
   cleanRelationEntityId,
+  computeEntityWorkbenchStats,
   deriveTimeBucket,
   matchesFieldRecordBucket,
+  matchesWorkItemStatus,
+  sortLegalConclusionsByChain,
   validateFieldRecord,
   validateLegalConclusion,
   validateRelation,
@@ -136,29 +139,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
     [selectedEntity.kind],
   );
 
-  const bucketCounts = useMemo(() => {
-    const counts: Record<FieldFilterBucket, number> = {
-      all: entityApplicableDefs.length,
-      unstarted: 0,
-      pending_action: 0,
-      draft: 0,
-      disputed: 0,
-      blocking_or_error: 0,
-      checked: 0,
-      specialist_review: 0,
-    };
-    for (const def of entityApplicableDefs) {
-      const rec = recordByFieldCode.get(def.fieldCode);
-      if (matchesFieldRecordBucket(rec, 'unstarted')) counts.unstarted += 1;
-      if (matchesFieldRecordBucket(rec, 'pending_action')) counts.pending_action += 1;
-      if (matchesFieldRecordBucket(rec, 'draft')) counts.draft += 1;
-      if (matchesFieldRecordBucket(rec, 'disputed')) counts.disputed += 1;
-      if (matchesFieldRecordBucket(rec, 'blocking_or_error')) counts.blocking_or_error += 1;
-      if (matchesFieldRecordBucket(rec, 'checked')) counts.checked += 1;
-      if (matchesFieldRecordBucket(rec, 'specialist_review')) counts.specialist_review += 1;
-    }
-    return counts;
-  }, [entityApplicableDefs, recordByFieldCode]);
+  const bucketCounts = useMemo(
+    () => computeEntityWorkbenchStats(caseDoc, selectedEntity.id),
+    [caseDoc, selectedEntity.id],
+  );
 
   // Filtered ordinary fact fields for display
   const applicableFields = useMemo(() => {
@@ -176,6 +160,61 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
       return true;
     });
   }, [entityApplicableDefs, groupFilter, searchQuery, statusBucket, recordByFieldCode]);
+
+  const filteredSubjectLegalItems = useMemo(() => {
+    if (selectedEntity.kind !== 'P' && selectedEntity.kind !== 'O') return [];
+    if (groupFilter !== 'ALL' || statusBucket === 'unstarted') return [];
+    const q = searchQuery.trim().toLowerCase();
+    const matched = caseDoc.legalConclusions.filter((item) => {
+      if (item.subjectId !== selectedEntity.id) return false;
+      if (q) {
+        const hay = `${item.id} ${item.conclusionLabel} ${item.rawText} ${item.lawArticle}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      const hasBlockingOrError =
+        PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
+        validateLegalConclusion(item).some((i) => i.severity === 'error');
+      return matchesWorkItemStatus(
+        {
+          reviewStatus: item.reviewStatus,
+          presenceStatus: item.presenceStatus,
+          hasBlockingOrError,
+        },
+        statusBucket,
+      );
+    });
+    return sortLegalConclusionsByChain(matched);
+  }, [caseDoc.legalConclusions, selectedEntity.id, selectedEntity.kind, groupFilter, statusBucket, searchQuery]);
+
+  const filteredEventRelations = useMemo(() => {
+    if (selectedEntity.kind !== 'E') return [];
+    if (groupFilter !== 'ALL' || statusBucket === 'unstarted') return [];
+    const q = searchQuery.trim().toLowerCase();
+    return caseDoc.relations
+      .filter((rel) => {
+        if (rel.eventId !== selectedEntity.id) return false;
+        if (q) {
+          const hay = `${rel.id} ${rel.fieldCode || 'D08.F049'} ${rel.sourceId} ${rel.targetId} ${rel.action} ${rel.relationType || ''} ${rel.collisionMode || ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        const presence = rel.presenceStatus || 'present';
+        const hasBlockingOrError =
+          PRESENCE_STATUS_META[presence].blocksScoring ||
+          validateRelation(rel).some((i) => i.severity === 'error');
+        return matchesWorkItemStatus(
+          {
+            reviewStatus: rel.reviewStatus,
+            presenceStatus: presence,
+            hasBlockingOrError,
+          },
+          statusBucket,
+        );
+      })
+      .sort((a, b) => a.stageOrder - b.stageOrder);
+  }, [caseDoc.relations, selectedEntity.id, selectedEntity.kind, groupFilter, statusBucket, searchQuery]);
+
+  const visibleEntityItemsCount =
+    applicableFields.length + filteredSubjectLegalItems.length + filteredEventRelations.length;
 
   // Grab accident datetime raw value for D02.F007 derivation helper
   const accidentDatetimeRecord = caseDoc.fieldRecords.find(
@@ -293,7 +332,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
           <span className="text-xs text-slate-500">
             当前主体：<strong className="font-mono-tabular text-slate-900">{selectedEntity.id}</strong>{' '}
             <span aria-hidden="true">·</span> {selectedEntity.label}{' '}
-            <span aria-hidden="true">·</span> 显示 {applicableFields.length}/{entityApplicableDefs.length} 项
+            <span aria-hidden="true">·</span> 本主体 {visibleEntityItemsCount}/{bucketCounts.all} 项
           </span>
         </div>
 
@@ -335,16 +374,16 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
         </div>
       </div>
 
-      {/* Empty State for non-legal/non-event entities */}
-      {applicableFields.length === 0 &&
-        selectedEntity.kind !== 'P' &&
-        selectedEntity.kind !== 'O' &&
-        selectedEntity.kind !== 'E' && (
+      {/* Empty State */}
+      {visibleEntityItemsCount === 0 &&
+        (statusBucket !== 'all' ||
+          groupFilter !== 'ALL' ||
+          searchQuery.trim().length > 0 ||
+          (selectedEntity.kind !== 'P' &&
+            selectedEntity.kind !== 'O' &&
+            selectedEntity.kind !== 'E')) && (
           <div className="rounded-lg border border-slate-200 bg-white p-8 text-center">
-            <p className="text-sm font-medium text-slate-800">没有匹配的适用字段</p>
-            <p className="mt-1 text-xs text-slate-500">
-              当前状态下无匹配字段。请切换上方状态分类或清除筛选，或在步骤 2 选择其他对象。
-            </p>
+            <p className="text-sm font-medium text-slate-800">没有匹配的适用记录</p>
             <button
               type="button"
               onClick={() => {
@@ -833,15 +872,33 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
       </div>
 
       {/* Synced Per-Participant / Per-Organization Legal Conclusions (P01+, O01+) */}
-      {(selectedEntity.kind === 'P' || selectedEntity.kind === 'O') && (
+      {(selectedEntity.kind === 'P' || selectedEntity.kind === 'O') &&
+        groupFilter === 'ALL' &&
+        statusBucket !== 'unstarted' &&
+        (filteredSubjectLegalItems.length > 0 || (statusBucket === 'all' && !searchQuery.trim())) && (
         <section
           aria-label={`${selectedEntity.id} 法律结论同步区`}
           className="rounded-lg border border-slate-200 bg-white p-4"
         >
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-            <h3 className="text-sm font-semibold text-slate-900">
-              {selectedEntity.id} · {selectedEntity.label} · 违法、原因与责任
-            </h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-sm font-semibold text-slate-900">
+                {selectedEntity.id} · {selectedEntity.label} · 违法、原因与责任
+              </h3>
+              {(() => {
+                const subjItems = caseDoc.legalConclusions.filter(
+                  (l) => l.subjectId === selectedEntity.id,
+                );
+                const vioCount = subjItems.filter((l) => l.category === 'violation').length;
+                const cauCount = subjItems.filter((l) => l.category === 'cause').length;
+                const liaCount = subjItems.filter((l) => l.category === 'liability').length;
+                return (
+                  <span className="font-mono-tabular text-xs text-slate-500">
+                    违法 {vioCount} → 原因 {cauCount} → 责任 {liaCount}
+                  </span>
+                );
+              })()}
+            </div>
             <div className="flex flex-wrap items-center gap-3">
               {(
                 [
@@ -893,9 +950,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
           </div>
 
           {(() => {
-            const subjectLegalItems = caseDoc.legalConclusions.filter(
-              (l) => l.subjectId === selectedEntity.id,
-            );
+            const subjectLegalItems = filteredSubjectLegalItems;
             const events = caseDoc.entities.filter((e) => e.kind === 'E');
             const allViolations = caseDoc.legalConclusions.filter((l) => l.category === 'violation');
             const allCauses = caseDoc.legalConclusions.filter((l) => l.category === 'cause');
@@ -915,10 +970,103 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       : item.category === 'cause'
                         ? '认定原因 (D10.F059)'
                         : '责任划分 (D10.F060)';
+                  const legalIssues = validateLegalConclusion(item);
                   const legalHasErr =
                     PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
-                    validateLegalConclusion(item).some((i) => i.severity === 'error');
+                    legalIssues.some((i) => i.severity === 'error');
                   const isItemFocused = activeLegalOrRelId === item.id;
+                  const prioritizedViolations = [...allViolations].sort((a, b) => {
+                    const aSame = a.subjectId === item.subjectId ? 0 : 1;
+                    const bSame = b.subjectId === item.subjectId ? 0 : 1;
+                    return aSame - bSame;
+                  });
+                  const prioritizedCauses = [...allCauses].sort((a, b) => {
+                    const aSame = a.subjectId === item.subjectId ? 0 : 1;
+                    const bSame = b.subjectId === item.subjectId ? 0 : 1;
+                    return aSame - bSame;
+                  });
+                  const referencingCauses =
+                    item.category === 'violation'
+                      ? allCauses.filter((c) => (c.linkedViolationIds || []).includes(item.id))
+                      : [];
+                  const handleCreateLinkedViolation = () => {
+                    const newVioId = `VIO-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+                    const newVio: LegalConclusionItem = {
+                      id: newVioId,
+                      category: 'violation',
+                      subjectId: item.subjectId,
+                      eventId: item.eventId || events[0]?.id || '',
+                      presenceStatus: 'present',
+                      rawText: '',
+                      lawArticle: '',
+                      conclusionLabel: '',
+                      causalLinkStatus: 'explicit_linked',
+                      linkedViolationIds: [],
+                      evidences: selectedPdfQuote
+                        ? [
+                            {
+                              id: `EV-${Date.now().toString(36)}`,
+                              page: selectedPdfQuote.page,
+                              quote: selectedPdfQuote.quote,
+                            },
+                          ]
+                        : [],
+                      reviewStatus: 'draft',
+                      disputeReason: '',
+                      adjudicatorNote: '',
+                    };
+                    onSaveLegalItem(newVio, `补录并关联违法行为 ${newVioId}`);
+                    const nextLinked = Array.from(
+                      new Set([...(item.linkedViolationIds || []), newVioId]),
+                    );
+                    const nextCausalStatus: CausalLinkStatus =
+                      !item.causalLinkStatus || item.causalLinkStatus === 'unspecified'
+                        ? 'explicit_linked'
+                        : item.causalLinkStatus;
+                    onSaveLegalItem({
+                      ...item,
+                      causalLinkStatus: nextCausalStatus,
+                      linkedViolationIds: nextLinked,
+                    });
+                    onFocusLegalOrRel(newVioId, `${item.subjectId} · 认定违法 (D10.F058)`);
+                  };
+                  const handleCreateLinkedCause = (fromViolation?: LegalConclusionItem) => {
+                    const newCauId = `CAU-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
+                    const newCau: LegalConclusionItem = {
+                      id: newCauId,
+                      category: 'cause',
+                      subjectId: item.subjectId,
+                      eventId: item.eventId || events[0]?.id || '',
+                      presenceStatus: 'present',
+                      rawText: '',
+                      lawArticle: '',
+                      conclusionLabel: '',
+                      causalLinkStatus: fromViolation ? 'explicit_linked' : 'unspecified',
+                      linkedViolationIds: fromViolation ? [fromViolation.id] : [],
+                      evidences: selectedPdfQuote
+                        ? [
+                            {
+                              id: `EV-${Date.now().toString(36)}`,
+                              page: selectedPdfQuote.page,
+                              quote: selectedPdfQuote.quote,
+                            },
+                          ]
+                        : [],
+                      reviewStatus: 'draft',
+                      disputeReason: '',
+                      adjudicatorNote: '',
+                    };
+                    onSaveLegalItem(newCau, `补录并关联认定原因 ${newCauId}`);
+                    if (item.category === 'liability') {
+                      onSaveLegalItem({
+                        ...item,
+                        linkedCauseIds: Array.from(
+                          new Set([...(item.linkedCauseIds || []), newCauId]),
+                        ),
+                      });
+                    }
+                    onFocusLegalOrRel(newCauId, `${item.subjectId} · 认定原因 (D10.F059)`);
+                  };
                   return (
                     <div
                       key={item.id}
@@ -1044,16 +1192,80 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               <option value="multiple_mixed">多因混合 (multiple_mixed)</option>
                             </select>
                           </div>
-                          {item.category === 'cause' && (
+                          {item.category === 'violation' && (
                             <div className="sm:col-span-7">
-                              <span className="mb-1 block text-xs font-medium text-slate-700">
-                                关联违法记录 (linked_violation_record_ids)
-                              </span>
-                              {allViolations.length === 0 ? (
-                                <span className="text-xs text-slate-400">暂无违法记录</span>
+                              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs font-medium text-slate-700">
+                                  被认定原因引用
+                                </span>
+                                {item.presenceStatus === 'present' && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCreateLinkedCause(item);
+                                    }}
+                                    className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
+                                  >
+                                    <Plus className="h-3 w-3" />
+                                    基于此违法补录原因
+                                  </button>
+                                )}
+                              </div>
+                              {referencingCauses.length === 0 ? (
+                                <span className="text-xs text-slate-400">
+                                  {item.presenceStatus === 'explicit_negative'
+                                    ? '明确无违法，不产生因果引用'
+                                    : '尚未被认定原因记录引用'}
+                                </span>
                               ) : (
                                 <div className="flex flex-wrap gap-1.5">
-                                  {allViolations.map((vio) => {
+                                  {referencingCauses.map((cau) => (
+                                    <button
+                                      key={cau.id}
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onFocusLegalOrRel(
+                                          cau.id,
+                                          `${cau.subjectId} · 认定原因 (D10.F059)`,
+                                        );
+                                      }}
+                                      className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-xs text-blue-900 hover:bg-blue-100"
+                                    >
+                                      <span className="font-mono-tabular">{cau.id}</span>
+                                      <span>({cau.conclusionLabel || '已关联'})</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {item.category === 'cause' && (
+                            <div className="sm:col-span-7">
+                              <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                                <span className="text-xs font-medium text-slate-700">
+                                  关联违法记录 (linked_violation_record_ids)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleCreateLinkedViolation();
+                                  }}
+                                  className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
+                                >
+                                  <Plus className="h-3 w-3" />
+                                  补录违法行为并关联
+                                </button>
+                              </div>
+                              {prioritizedViolations.length === 0 ? (
+                                <span className="text-xs text-slate-400">
+                                  暂无可勾选违法记录，请点击右上「补录违法行为并关联」
+                                </span>
+                              ) : (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {prioritizedViolations.map((vio) => {
                                     const checked = (item.linkedViolationIds || []).includes(vio.id);
                                     return (
                                       <label
@@ -1072,12 +1284,25 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                                             const next = e.target.checked
                                               ? [...curr, vio.id]
                                               : curr.filter((x) => x !== vio.id);
-                                            onSaveLegalItem({ ...item, linkedViolationIds: next });
+                                            const nextCausalStatus: CausalLinkStatus =
+                                              e.target.checked &&
+                                              (!item.causalLinkStatus ||
+                                                item.causalLinkStatus === 'unspecified')
+                                                ? 'explicit_linked'
+                                                : item.causalLinkStatus || 'unspecified';
+                                            onSaveLegalItem({
+                                              ...item,
+                                              causalLinkStatus: nextCausalStatus,
+                                              linkedViolationIds: next,
+                                            });
                                           }}
                                           className="h-3 w-3 accent-blue-700"
                                         />
                                         <span className="font-mono-tabular">{vio.id}</span>
-                                        <span>({vio.subjectId})</span>
+                                        <span className="max-w-[140px] truncate">
+                                          ({vio.subjectId}
+                                          {vio.conclusionLabel ? ` · ${vio.conclusionLabel}` : ''})
+                                        </span>
                                       </label>
                                     );
                                   })}
@@ -1088,14 +1313,29 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         </div>
                       ) : (
                         <div className="mt-2 rounded border border-slate-200 bg-white p-2">
-                          <span className="mb-1 block text-xs font-medium text-slate-700">
-                            责任依据的认定原因 (linked_cause_record_ids)
-                          </span>
-                          {allCauses.length === 0 ? (
-                            <span className="text-xs text-slate-400">暂无认定原因记录</span>
+                          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-slate-700">
+                              责任依据的认定原因 (linked_cause_record_ids)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleCreateLinkedCause();
+                              }}
+                              className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
+                            >
+                              <Plus className="h-3 w-3" />
+                              补录认定原因并关联
+                            </button>
+                          </div>
+                          {prioritizedCauses.length === 0 ? (
+                            <span className="text-xs text-slate-400">
+                              暂无认定原因记录，若文书认定有责可点击右上「补录认定原因并关联」
+                            </span>
                           ) : (
                             <div className="flex flex-wrap gap-1.5">
-                              {allCauses.map((cau) => {
+                              {prioritizedCauses.map((cau) => {
                                 const checked = (item.linkedCauseIds || []).includes(cau.id);
                                 return (
                                   <label
@@ -1119,7 +1359,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                                       className="h-3 w-3 accent-blue-700"
                                     />
                                     <span className="font-mono-tabular">{cau.id}</span>
-                                    <span>({cau.subjectId})</span>
+                                    <span className="max-w-[160px] truncate">
+                                      ({cau.subjectId}
+                                      {cau.conclusionLabel ? ` · ${cau.conclusionLabel}` : ''})
+                                    </span>
                                   </label>
                                 );
                               })}
@@ -1213,6 +1456,24 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         </button>
                       </div>
 
+                      {legalIssues.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-1">
+                          {legalIssues.map((iss) => (
+                            <div
+                              key={iss.code}
+                              className={`flex items-center gap-1.5 rounded border px-2.5 py-1 text-xs ${
+                                iss.severity === 'error'
+                                  ? 'border-red-200 bg-red-50 text-red-800'
+                                  : 'border-amber-200 bg-amber-50 text-amber-900'
+                              }`}
+                            >
+                              <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                              <span>{iss.message}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       {userRole !== 'annotator' && (
                         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/70 pt-2">
                           <input
@@ -1299,7 +1560,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
       )}
 
       {/* Synced Event Relations & Stage Legal Summary (E01+) */}
-      {selectedEntity.kind === 'E' && (
+      {selectedEntity.kind === 'E' &&
+        groupFilter === 'ALL' &&
+        statusBucket !== 'unstarted' &&
+        (filteredEventRelations.length > 0 || (statusBucket === 'all' && !searchQuery.trim())) && (
         <section
           aria-label={`${selectedEntity.id} 事件碰撞关系同步区`}
           className="rounded-lg border border-slate-200 bg-white p-4"
@@ -1359,9 +1623,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
           </div>
 
           {(() => {
-            const eventRelations = caseDoc.relations
-              .filter((r) => r.eventId === selectedEntity.id)
-              .sort((a, b) => a.stageOrder - b.stageOrder);
+            const eventRelations = filteredEventRelations;
             const linkedLegal = caseDoc.legalConclusions.filter(
               (l) => l.eventId === selectedEntity.id,
             );

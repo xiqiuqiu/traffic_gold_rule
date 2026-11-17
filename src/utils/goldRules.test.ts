@@ -7,14 +7,17 @@ import {
   collectCaseWorkItems,
   computeCaseReadiness,
   computeEntityProgressMap,
+  computeEntityWorkbenchStats,
   deriveTimeBucket,
   filterWorkItems,
   generateNextEntityId,
   maskPiiText,
   matchesFieldRecordBucket,
+  sortLegalConclusionsByChain,
   validateFieldRecord,
+  validateLegalConclusion,
 } from './goldRules';
-import { CaseDocument, FieldRecord } from '../types/gold';
+import { CaseDocument, FieldRecord, LegalConclusionItem } from '../types/gold';
 import { MASTER_FIELD_SCHEMA } from '../data/schemaCatalog';
 import { SEED_CASES } from '../data/seedCases';
 
@@ -254,4 +257,152 @@ test('collectCaseWorkItems, filterWorkItems, and computeEntityProgressMap classi
   assert.equal(matchesFieldRecordBucket(undefined, 'draft'), false);
   assert.equal(matchesFieldRecordBucket(case06.fieldRecords[0], 'unstarted'), false);
 });
+
+test('case-wide readiness counts match the sum of per-entity workbench and progress counts', () => {
+  for (const seed of SEED_CASES) {
+    const readiness = computeCaseReadiness(seed);
+    const progressMap = computeEntityProgressMap(seed);
+
+    let sumDraft = 0;
+    let sumDisputed = 0;
+    let sumChecked = 0;
+    let sumSpecialist = 0;
+
+    for (const ent of seed.entities) {
+      const stats = computeEntityWorkbenchStats(seed, ent.id);
+      const prog = progressMap[ent.id];
+      assert.equal(stats.draft, prog.draftCount);
+      assert.equal(stats.disputed, prog.disputedCount);
+      assert.equal(stats.checked, prog.checkedCount);
+      assert.equal(stats.specialist_review, prog.specialistCount);
+      assert.equal(stats.unstarted, prog.applicableUnstartedCount);
+      assert.equal(stats.all, prog.totalItems + prog.applicableUnstartedCount);
+
+      sumDraft += stats.draft;
+      sumDisputed += stats.disputed;
+      sumChecked += stats.checked;
+      sumSpecialist += stats.specialist_review;
+    }
+
+    assert.equal(sumDraft, readiness.statusCounts.draft);
+    assert.equal(sumDisputed, readiness.statusCounts.disputed);
+    assert.equal(sumChecked, readiness.statusCounts.checked);
+    assert.equal(sumSpecialist, readiness.statusCounts.specialist_review);
+  }
+});
+
+test('sortLegalConclusionsByChain orders violation -> cause -> liability stably', () => {
+  const mk = (id: string, category: LegalConclusionItem['category']): LegalConclusionItem => ({
+    id,
+    category,
+    subjectId: 'P01',
+    eventId: 'E01',
+    presenceStatus: 'present',
+    rawText: id,
+    lawArticle: '',
+    conclusionLabel: id,
+    evidences: [{ id: `ev-${id}`, page: 1, quote: id }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  });
+  const sorted = sortLegalConclusionsByChain([
+    mk('LIA-1', 'liability'),
+    mk('CAU-1', 'cause'),
+    mk('VIO-1', 'violation'),
+    mk('CAU-2', 'cause'),
+    mk('VIO-2', 'violation'),
+  ]);
+  assert.deepEqual(
+    sorted.map((x) => x.id),
+    ['VIO-1', 'VIO-2', 'CAU-1', 'CAU-2', 'LIA-1'],
+  );
+});
+
+test('validateLegalConclusion warns when explicit_linked cause lacks violations or liable party lacks causes', () => {
+  const unlinkedCause: LegalConclusionItem = {
+    id: 'CAU-X',
+    category: 'cause',
+    subjectId: 'P01',
+    eventId: 'E01',
+    presenceStatus: 'present',
+    rawText: '全部原因',
+    lawArticle: '',
+    conclusionLabel: '全部原因',
+    causalLinkStatus: 'explicit_linked',
+    linkedViolationIds: [],
+    evidences: [{ id: 'ev1', page: 1, quote: '全部原因' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+  assert.equal(
+    validateLegalConclusion(unlinkedCause).some(
+      (i) => i.code === 'MISSING_LINKED_VIOLATION' && i.severity === 'warning',
+    ),
+    true,
+  );
+
+  const unlinkedLiable: LegalConclusionItem = {
+    id: 'LIA-X',
+    category: 'liability',
+    subjectId: 'P01',
+    eventId: 'E01',
+    presenceStatus: 'present',
+    rawText: '全部责任',
+    lawArticle: '',
+    conclusionLabel: '全部责任',
+    linkedCauseIds: [],
+    evidences: [{ id: 'ev2', page: 1, quote: '全部责任' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+  assert.equal(
+    validateLegalConclusion(unlinkedLiable).some(
+      (i) => i.code === 'MISSING_LINKED_CAUSE' && i.severity === 'warning',
+    ),
+    true,
+  );
+
+  const noFault: LegalConclusionItem = {
+    ...unlinkedLiable,
+    id: 'LIA-NO-FAULT',
+    conclusionLabel: '无责任',
+    rawText: '无责任',
+  };
+  assert.equal(
+    validateLegalConclusion(noFault).some((i) => i.code === 'MISSING_LINKED_CAUSE'),
+    false,
+  );
+});
+
+test('all seed cases maintain grounded VIO -> CAU -> LIA chains without missing link warnings', () => {
+  for (const seed of SEED_CASES) {
+    const vioIds = new Set(
+      seed.legalConclusions.filter((l) => l.category === 'violation').map((l) => l.id),
+    );
+    const cauIds = new Set(
+      seed.legalConclusions.filter((l) => l.category === 'cause').map((l) => l.id),
+    );
+    assert.ok(vioIds.size > 0, `${seed.caseId} should include violation records`);
+    assert.ok(cauIds.size > 0, `${seed.caseId} should include cause records`);
+
+    for (const item of seed.legalConclusions) {
+      const issues = validateLegalConclusion(item);
+      assert.equal(
+        issues.length,
+        0,
+        `${seed.caseId} ${item.id} unexpected issues: ${issues.map((i) => i.code).join(',')}`,
+      );
+      for (const vid of item.linkedViolationIds || []) {
+        assert.ok(vioIds.has(vid), `${seed.caseId} ${item.id} references missing ${vid}`);
+      }
+      for (const cid of item.linkedCauseIds || []) {
+        assert.ok(cauIds.has(cid), `${seed.caseId} ${item.id} references missing ${cid}`);
+      }
+    }
+  }
+});
+
 
