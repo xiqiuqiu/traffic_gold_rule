@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ArrowRight, Check, Link2, Plus, Trash2, XCircle } from 'lucide-react';
+import { ArrowRight, Check, Link2, Plus, Trash2, XCircle } from 'lucide-react';
 import { PRESENCE_STATUS_META } from '../data/schemaCatalog';
 import {
   CaseDocument,
@@ -263,19 +263,6 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      {/* Legal Independence Rule Banner */}
-      <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-4 py-3 text-xs text-amber-950">
-        <div className="flex items-start gap-2">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" aria-hidden="true" />
-          <div>
-            <p className="font-semibold">步骤 6 · 法律结论与事件关系独立记录原则（禁止补推断）</p>
-            <p className="mt-0.5 text-amber-900">
-              违法、原因、责任不得混入普通事实；碰撞主客体方向与事件阶段顺序（如多车多阶段追尾）不得随意对调；没有文书明确依据的因果不得自行补充。
-            </p>
-          </div>
-        </div>
-      </div>
-
       {/* Sub-navigation */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
         <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 p-1">
@@ -536,51 +523,49 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         ))}
                       </select>
                     </div>
-                    <div className="sm:col-span-7">
-                      <span className="mb-1 block text-xs font-medium text-slate-700">
-                        关联违法记录 (linked_violation_record_ids)
-                      </span>
-                      {item.category === 'violation' ? (
-                        <p className="text-xs text-slate-500">
-                          本条为违法行为记录，可在「认定事故原因 (D10.F059)」中勾选关联。
-                        </p>
-                      ) : violationRecords.length === 0 ? (
-                        <p className="text-xs text-slate-500">暂无可关联的违法行为记录</p>
-                      ) : (
-                        <div className="flex flex-wrap gap-1.5">
-                          {violationRecords.map((vio) => {
-                            const linked = (item.linkedViolationIds || []).includes(vio.id);
-                            return (
-                              <label
-                                key={vio.id}
-                                className={`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-0.5 text-xs ${
-                                  linked
-                                    ? 'border-blue-600 bg-blue-50 text-blue-900'
-                                    : 'border-slate-200 bg-white text-slate-700'
-                                }`}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={linked}
-                                  onChange={(e) => {
-                                    const current = item.linkedViolationIds || [];
-                                    const next = e.target.checked
-                                      ? [...current, vio.id]
-                                      : current.filter((x) => x !== vio.id);
-                                    onSaveLegalItem({ ...item, linkedViolationIds: next });
-                                  }}
-                                  className="h-3 w-3 accent-blue-700"
-                                />
-                                <span className="font-mono-tabular">{vio.id}</span>
-                                <span className="max-w-[140px] truncate">
-                                  ({vio.subjectId} · {vio.conclusionLabel || '未填'})
-                                </span>
-                              </label>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
+                    {item.category === 'cause' && (
+                      <div className="sm:col-span-7">
+                        <span className="mb-1 block text-xs font-medium text-slate-700">
+                          关联违法记录 (linked_violation_record_ids)
+                        </span>
+                        {violationRecords.length === 0 ? (
+                          <p className="text-xs text-slate-400">暂无可关联的违法行为记录</p>
+                        ) : (
+                          <div className="flex flex-wrap gap-1.5">
+                            {violationRecords.map((vio) => {
+                              const linked = (item.linkedViolationIds || []).includes(vio.id);
+                              return (
+                                <label
+                                  key={vio.id}
+                                  className={`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-0.5 text-xs ${
+                                    linked
+                                      ? 'border-blue-600 bg-blue-50 text-blue-900'
+                                      : 'border-slate-200 bg-white text-slate-700'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={linked}
+                                    onChange={(e) => {
+                                      const current = item.linkedViolationIds || [];
+                                      const next = e.target.checked
+                                        ? [...current, vio.id]
+                                        : current.filter((x) => x !== vio.id);
+                                      onSaveLegalItem({ ...item, linkedViolationIds: next });
+                                    }}
+                                    className="h-3 w-3 accent-blue-700"
+                                  />
+                                  <span className="font-mono-tabular">{vio.id}</span>
+                                  <span className="max-w-[140px] truncate">
+                                    ({vio.subjectId} · {vio.conclusionLabel || '未填'})
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="mt-3 rounded-md border border-slate-200 bg-slate-50/70 p-2.5">
@@ -719,7 +704,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                   ))}
                   {item.evidences.length === 0 && (
-                    <p className="text-xs text-slate-500">请划选左侧文书证据后引用。</p>
+                    <p className="text-xs text-slate-400">暂无证据</p>
                   )}
                 </div>
 

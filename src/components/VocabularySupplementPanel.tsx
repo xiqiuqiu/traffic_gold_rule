@@ -71,14 +71,9 @@ export const VocabularySupplementPanel: React.FC<VocabularySupplementPanelProps>
   return (
     <div className="flex flex-col gap-4 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white p-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-900">
-            受控词表与衍生规则增补工作表（共 {supplements.length} 项 · 已核定 {approvedCount} 项）
-          </h2>
-          <p className="mt-0.5 text-xs text-slate-500">
-            对应无平台码表的 14 个核心字段。在此增补的候选词条会实时同步至「标注工作台」的标准值下拉/多选框中，禁止标注人私自造新正式标签。
-          </p>
-        </div>
+        <h2 className="text-sm font-semibold text-slate-900">
+          受控词表增补工作表（共 {supplements.length} 项 · 已核定 {approvedCount} 项）
+        </h2>
 
         <div className="flex items-center gap-3">
           <div className="flex items-center rounded-md bg-slate-100 p-0.5">

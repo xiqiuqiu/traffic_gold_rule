@@ -706,21 +706,19 @@ export default function App() {
 
         {/* Right Pane: Structured Annotation & Workflow Views */}
         <div className="flex min-h-0 flex-col overflow-y-auto bg-slate-50 lg:col-span-7">
-          {/* Step 1: Material Identity Strip */}
-          <div className="border-b border-slate-200 bg-white px-4 py-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex flex-wrap items-center gap-2 text-slate-600">
-                <strong className="text-slate-900">步骤 1 · 材料身份与角色规则</strong>
-                <span aria-hidden="true">·</span>
-                <span className="font-mono-tabular">
-                  {activeCase.documentId || activeCase.caseId.toLowerCase()} ({activeCase.annotationVersion})
+          {/* Document Identity Strip */}
+          <div className="border-b border-slate-200 bg-white px-5 py-2 text-xs text-slate-500">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-mono-tabular font-medium text-slate-800">
+                  {activeCase.documentId || activeCase.caseId.toLowerCase()}
                 </span>
                 <span aria-hidden="true">·</span>
-                <span className="font-mono-tabular">{activeCase.fileSha256}</span>
+                <span className="font-mono-tabular">{activeCase.annotationVersion}</span>
                 <span aria-hidden="true">·</span>
-                <span>{USER_ROLE_META[userRole].badgeText}</span>
+                <span className="font-mono-tabular">{activeCase.fileSha256}</span>
               </div>
-              <span className="text-slate-500">{activeCase.scenarioSummary}</span>
+              <span className="text-slate-600">{USER_ROLE_META[userRole].badgeText}</span>
             </div>
           </div>
 

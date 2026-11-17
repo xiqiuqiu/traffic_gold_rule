@@ -415,15 +415,17 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       </>
                     )}
                   </div>
-                  <h3 className="mt-1 text-[15px] font-semibold text-slate-900">
+                  <h3
+                    className="mt-1 text-[15px] font-semibold text-slate-900"
+                    title={def.statusNote}
+                  >
                     {def.fieldName}
                     {def.isSensitivePii && (
                       <span className="ml-2 text-xs font-normal text-slate-500">
-                        （含敏感标识，对外导出自动脱敏）
+                        （导出脱敏）
                       </span>
                     )}
                   </h3>
-                  <p className="mt-0.5 text-xs text-slate-500">{def.statusNote}</p>
                 </div>
 
                 {/* Review Lifecycle Stepper + Quick Clear */}
@@ -452,15 +454,11 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
               {/* Step 4: Seven Presence Status Selector */}
               <div className="mt-3">
                 <div className="mb-1.5 flex items-center justify-between text-xs">
-                  <span className="font-medium text-slate-700">步骤 4 · 记录状态（7选1）</span>
-                  {presenceRule && (
+                  <span className="font-medium text-slate-700">记录状态</span>
+                  {presenceRule && (presenceRule.forbidsValue || presenceRule.blocksScoring) && (
                     <span
                       className={
-                        presenceRule.tone === 'good'
-                          ? 'text-emerald-700'
-                          : presenceRule.tone === 'warn'
-                            ? 'text-amber-700'
-                            : 'text-red-700'
+                        presenceRule.tone === 'warn' ? 'text-amber-700' : 'text-red-700'
                       }
                     >
                       {presenceRule.requirement}
@@ -628,7 +626,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                   <div className="rounded-md border border-slate-200 bg-slate-50/60 p-2.5">
                     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-medium text-slate-700">
-                        步骤 5 · 证据摘录（页码 + 最短支持原文）
+                        证据摘录
                       </span>
                       <div className="flex items-center gap-3">
                         <button
@@ -659,9 +657,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                     </div>
 
                     {record.evidences.length === 0 ? (
-                      <p className="text-xs text-slate-500">
-                        暂无证据。请在左侧 PDF 划选支持原文后点击“引用左侧选区”，或手动添加。
-                      </p>
+                      <p className="text-xs text-slate-400">暂无证据</p>
                     ) : (
                       <div className="flex flex-col gap-1.5">
                         {record.evidences.map((ev, idx) => (
@@ -735,12 +731,8 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                   )}
 
                   {/* Role-Based Review & Adjudication Controls */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
-                    {userRole === 'annotator' && (
-                      <p className="text-xs text-slate-500">
-                        第一标注人编辑后默认保持“草稿”状态，须由第二复核人核对或业务裁定后才进入评分。
-                      </p>
-                    )}
+                  {(userRole !== 'annotator' || record.disputeReason || record.adjudicatorNote) && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5">
 
                     {userRole === 'reviewer' && (
                       <div className="flex w-full flex-wrap items-center justify-between gap-2">
@@ -825,14 +817,14 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       </div>
                     )}
 
-                    {/* Show existing dispute / adjudicator notes to all roles */}
                     {userRole === 'annotator' && (record.disputeReason || record.adjudicatorNote) && (
                       <div className="w-full rounded border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs text-slate-700">
                         {record.disputeReason && <p>复核争议：{record.disputeReason}</p>}
                         {record.adjudicatorNote && <p>裁定说明：{record.adjudicatorNote}</p>}
                       </div>
                     )}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -846,15 +838,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
           aria-label={`${selectedEntity.id} 法律结论同步区`}
           className="rounded-lg border border-slate-200 bg-white p-4"
         >
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900">
-                {selectedEntity.id} · {selectedEntity.label} 的违法行为、认定原因与责任划分
-              </h3>
-              <p className="mt-0.5 text-xs text-slate-500">
-                此区与顶部「法律与关系」页签实时同步（单源存储、绝不重复填报）；同一参与方可按不同事实或事件阶段新增多条违法与原因。
-              </p>
-            </div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <h3 className="text-sm font-semibold text-slate-900">
+              {selectedEntity.id} · {selectedEntity.label} · 违法、原因与责任
+            </h3>
             <div className="flex flex-wrap items-center gap-3">
               {(
                 [
@@ -914,8 +901,8 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
             const allCauses = caseDoc.legalConclusions.filter((l) => l.category === 'cause');
             if (subjectLegalItems.length === 0) {
               return (
-                <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">
-                  {selectedEntity.id} 尚未登记违法行为、认定原因或责任划分；如无违法/无责任，也建议点击右上角新增一条明确记录。
+                <p className="py-4 text-center text-xs text-slate-400">
+                  暂无违法、原因或责任记录
                 </p>
               );
             }
@@ -1057,47 +1044,47 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               <option value="multiple_mixed">多因混合 (multiple_mixed)</option>
                             </select>
                           </div>
-                          <div className="sm:col-span-7">
-                            <span className="mb-1 block text-xs font-medium text-slate-700">
-                              关联违法记录 (linked_violation_record_ids)
-                            </span>
-                            {item.category === 'violation' ? (
-                              <span className="text-xs text-slate-400">在原因记录中勾选关联</span>
-                            ) : allViolations.length === 0 ? (
-                              <span className="text-xs text-slate-400">暂无违法记录</span>
-                            ) : (
-                              <div className="flex flex-wrap gap-1.5">
-                                {allViolations.map((vio) => {
-                                  const checked = (item.linkedViolationIds || []).includes(vio.id);
-                                  return (
-                                    <label
-                                      key={vio.id}
-                                      className={`inline-flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
-                                        checked
-                                          ? 'border-blue-600 bg-blue-50 text-blue-900'
-                                          : 'border-slate-200 bg-slate-50 text-slate-700'
-                                      }`}
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={checked}
-                                        onChange={(e) => {
-                                          const curr = item.linkedViolationIds || [];
-                                          const next = e.target.checked
-                                            ? [...curr, vio.id]
-                                            : curr.filter((x) => x !== vio.id);
-                                          onSaveLegalItem({ ...item, linkedViolationIds: next });
-                                        }}
-                                        className="h-3 w-3 accent-blue-700"
-                                      />
-                                      <span className="font-mono-tabular">{vio.id}</span>
-                                      <span>({vio.subjectId})</span>
-                                    </label>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
+                          {item.category === 'cause' && (
+                            <div className="sm:col-span-7">
+                              <span className="mb-1 block text-xs font-medium text-slate-700">
+                                关联违法记录 (linked_violation_record_ids)
+                              </span>
+                              {allViolations.length === 0 ? (
+                                <span className="text-xs text-slate-400">暂无违法记录</span>
+                              ) : (
+                                <div className="flex flex-wrap gap-1.5">
+                                  {allViolations.map((vio) => {
+                                    const checked = (item.linkedViolationIds || []).includes(vio.id);
+                                    return (
+                                      <label
+                                        key={vio.id}
+                                        className={`inline-flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
+                                          checked
+                                            ? 'border-blue-600 bg-blue-50 text-blue-900'
+                                            : 'border-slate-200 bg-slate-50 text-slate-700'
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={(e) => {
+                                            const curr = item.linkedViolationIds || [];
+                                            const next = e.target.checked
+                                              ? [...curr, vio.id]
+                                              : curr.filter((x) => x !== vio.id);
+                                            onSaveLegalItem({ ...item, linkedViolationIds: next });
+                                          }}
+                                          className="h-3 w-3 accent-blue-700"
+                                        />
+                                        <span className="font-mono-tabular">{vio.id}</span>
+                                        <span>({vio.subjectId})</span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       ) : (
                         <div className="mt-2 rounded border border-slate-200 bg-white p-2">
@@ -1317,15 +1304,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
           aria-label={`${selectedEntity.id} 事件碰撞关系同步区`}
           className="rounded-lg border border-slate-200 bg-white p-4"
         >
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
-            <div>
-              <h3 className="text-sm font-semibold text-slate-900">
-                {selectedEntity.id} · {selectedEntity.label}（事件顺序、碰撞方式与主客体关系）
-              </h3>
-              <p className="mt-0.5 text-xs text-slate-500">
-                事件对象 E 专门承载碰撞主客体关系（D08.F047/048/049）并作为多阶段原因/责任的阶段锚点，无需在此重复填参与人的认定原因。
-              </p>
-            </div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <h3 className="text-sm font-semibold text-slate-900">
+              {selectedEntity.id} · {selectedEntity.label} · 碰撞关系
+            </h3>
             <div className="flex items-center gap-3">
               <button
                 type="button"

@@ -325,14 +325,9 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
 
       {/* Section 2: Per-Entity Completion & Unstarted Fields Matrix */}
       <section className="px-6 py-5">
-        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-base font-semibold text-slate-900">
-            对象完成度与未填缺口
-          </h3>
-          <span className="text-xs text-slate-500">
-            区分“已登记但待复核/裁定”与“尚未填写的适用字段”
-          </span>
-        </div>
+        <h3 className="mb-3 text-base font-semibold text-slate-900">
+          对象完成度与未填缺口
+        </h3>
 
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-xs">
@@ -429,14 +424,9 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
 
       {/* Section 3: Integrated Review Queue & Jump Locator */}
       <section className="px-6 py-5">
-        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-base font-semibold text-slate-900">
-            条目审查与跳转定位
-          </h3>
-          <span className="text-xs text-slate-500">
-            点击“定位处理”可直接返回工作台或法务页签并聚焦到对应条目
-          </span>
-        </div>
+        <h3 className="mb-3 text-base font-semibold text-slate-900">
+          条目审查与跳转定位
+        </h3>
 
         {/* Underline Filter Tabs + Compact Controls */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-2">
@@ -657,15 +647,10 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
 
       {/* Section 4: 10-Item Acceptance Checklist */}
       <section className="px-6 py-5">
-        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-          <h3 className="text-base font-semibold text-slate-900">
-            步骤 8 · 10 项交付标准验收清单（{readiness.checklistCheckedCount} /{' '}
-            {readiness.checklistTotalCount}）
-          </h3>
-          <span className="text-xs text-slate-500">
-            供第一标注人自检与第二复核人交付验收逐项核对确认
-          </span>
-        </div>
+        <h3 className="mb-3 text-base font-semibold text-slate-900">
+          交付标准验收清单（{readiness.checklistCheckedCount} /{' '}
+          {readiness.checklistTotalCount}）
+        </h3>
 
         <div className="divide-y divide-slate-100 border-t border-slate-100">
           {ACCEPTANCE_CHECKLIST_ITEMS.map((item, idx) => {
@@ -696,14 +681,9 @@ export const AcceptanceExportPanel: React.FC<AcceptanceExportPanelProps> = ({
       {/* Section 5: Export Actions & Live JSON Output Preview */}
       <section className="px-6 py-5">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h3 className="text-base font-semibold text-slate-900">
-              标准化人工基准输出
-            </h3>
-            <p className="mt-0.5 text-xs text-slate-500">
-              每份材料生成一份独立机读基准 JSON，直接对接自动化评测系统。
-            </p>
-          </div>
+          <h3 className="text-base font-semibold text-slate-900">
+            标准化人工基准输出
+          </h3>
 
           <div className="flex flex-wrap items-center gap-4">
             <div className="flex items-center rounded-md bg-slate-100 p-0.5 text-xs">

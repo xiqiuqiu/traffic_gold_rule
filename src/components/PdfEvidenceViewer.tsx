@@ -377,7 +377,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
         {!loading && !error && viewMode === 'text' && (
           <div className="relative mx-auto max-w-2xl overflow-hidden rounded-lg border border-slate-200 bg-white p-5">
             <div className="mb-3 flex items-center justify-between border-b border-slate-100 pb-2 text-xs text-slate-500">
-              <span>第 {currentPage} 页逐行文本流（可直接划选最短原文）</span>
+              <span>第 {currentPage} 页文本</span>
               <span className="font-mono-tabular">共 {numPages} 页</span>
             </div>
             <pre className="relative z-[1] whitespace-pre-wrap font-sans text-sm leading-7 text-slate-800 select-text">

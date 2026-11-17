@@ -41,14 +41,7 @@ export const EntityRegistryBar: React.FC<EntityRegistryBarProps> = ({
   return (
     <div className="border-b border-slate-200 bg-white px-5 pt-4 pb-2.5">
       <div className="mb-2.5 flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-900">
-            步骤 2 · 本案对象登记表
-          </h2>
-          <p className="mt-0.5 text-xs text-slate-500">
-            先列清真正出现的对象再标字段；选中对象后仅显示该对象适用字段，防止挂错主体。
-          </p>
-        </div>
+        <h2 className="text-sm font-semibold text-slate-900">本案对象</h2>
         <button
           type="button"
           onClick={() => setAddingOpen((v) => !v)}
