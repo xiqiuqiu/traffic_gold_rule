@@ -1,0 +1,6 @@
+{
+  "name": "Gold 交通事故文档人工标注工作台",
+  "description": "面向交通事故认定书的人工 Gold 基准标注、双人复核、业务裁定、受控词表维护与标准化 JSON 评测导出工作台。",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

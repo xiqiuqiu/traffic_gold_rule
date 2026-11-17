@@ -1,0 +1,165 @@
+export type EntityKind = 'ACC' | 'P' | 'V' | 'E' | 'R' | 'I' | 'O';
+
+export type PresenceStatus =
+  | 'present'
+  | 'explicit_negative'
+  | 'not_mentioned'
+  | 'not_applicable'
+  | 'unreadable'
+  | 'source_conflict'
+  | 'needs_review';
+
+export type ReviewStatus =
+  | 'draft'
+  | 'checked'
+  | 'disputed'
+  | 'specialist_review';
+
+export type UserRole = 'annotator' | 'reviewer' | 'adjudicator';
+
+export type GroupCode = 'G01' | 'G02' | 'G03' | 'G04' | 'G05' | 'G06' | 'G07' | 'G08';
+
+export interface FieldDefinition {
+  fieldCode: string;
+  groupCode: GroupCode;
+  groupName: string;
+  fieldName: string;
+  applicableKinds: EntityKind[];
+  valueType: string;
+  existingCodeTable: string;
+  statusNote: string;
+  allowMultiple: boolean;
+  presetOptions: string[];
+  isSensitivePii?: boolean;
+  isDerived?: boolean;
+  isLegalOrRelation?: boolean;
+}
+
+export interface VocabularySupplementItem {
+  fieldCode: string;
+  fieldName: string;
+  applicableSubject: string;
+  singleMultiRule: string;
+  supplementType: string;
+  standardCode: string;
+  standardName: string;
+  candidateOptions: string[];
+  definition: string;
+  synonyms: string;
+  exclusions: string;
+  allowMultiple: boolean;
+  approvalStatus: '待审核' | '已核定';
+  reviewComment: string;
+}
+
+export interface EvidenceItem {
+  id: string;
+  page: number;
+  quote: string;
+}
+
+export interface EntityItem {
+  id: string;
+  kind: EntityKind;
+  label: string;
+  subtitle?: string;
+}
+
+export interface FieldRecord {
+  recordId: string;
+  entityId: string;
+  fieldCode: string;
+  presenceStatus: PresenceStatus;
+  rawValue: string;
+  normalizedValues: string[];
+  evidences: EvidenceItem[];
+  reviewStatus: ReviewStatus;
+  disputeReason: string;
+  adjudicatorNote: string;
+  updatedByRole: UserRole;
+  updatedAt: string;
+}
+
+export type LegalCategory = 'violation' | 'cause' | 'liability';
+
+export interface LegalConclusionItem {
+  id: string;
+  category: LegalCategory;
+  subjectId: string;
+  eventId: string;
+  presenceStatus: PresenceStatus;
+  rawText: string;
+  lawArticle: string;
+  conclusionLabel: string;
+  evidences: EvidenceItem[];
+  reviewStatus: ReviewStatus;
+  disputeReason: string;
+  adjudicatorNote: string;
+}
+
+export interface EventRelationItem {
+  id: string;
+  eventId: string;
+  stageOrder: number;
+  sourceId: string;
+  action: string;
+  targetId: string;
+  collisionMode: string;
+  directionNote: string;
+  evidences: EvidenceItem[];
+  reviewStatus: ReviewStatus;
+  disputeReason: string;
+  adjudicatorNote: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  timestamp: string;
+  actorRole: UserRole;
+  actorName: string;
+  action: string;
+  targetRef: string;
+  comment: string;
+}
+
+export interface CaseDocument {
+  caseId: string;
+  title: string;
+  pilotCode: string;
+  scenarioSummary: string;
+  pdfUrl: string;
+  sourceFilename: string;
+  fileSha256: string;
+  pageCount: number;
+  manualVersion: string;
+  annotationVersion: string;
+  maskPiiOnExport: boolean;
+  annotatorName: string;
+  reviewerName: string;
+  adjudicatorName: string;
+  entities: EntityItem[];
+  fieldRecords: FieldRecord[];
+  legalConclusions: LegalConclusionItem[];
+  relations: EventRelationItem[];
+  checklist: Record<string, boolean>;
+  auditLog: AuditLogEntry[];
+}
+
+export interface ValidationIssue {
+  code: string;
+  severity: 'error' | 'warning';
+  message: string;
+}
+
+export interface ReadinessSummary {
+  totalFieldRecords: number;
+  totalLegalItems: number;
+  totalRelations: number;
+  statusCounts: Record<ReviewStatus, number>;
+  blockingPresenceCount: number;
+  validationErrors: number;
+  checklistCheckedCount: number;
+  checklistTotalCount: number;
+  eligibleForScoring: boolean;
+  blockingReasons: string[];
+}

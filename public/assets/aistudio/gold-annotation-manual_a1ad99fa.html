@@ -1,0 +1,522 @@
+<title>人工 Gold 标注手册</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@600;700&display=swap">
+<style>
+/* Layout: a field handbook with a compact index, numbered work stages, and checkable acceptance criteria. */
+:root {
+  --bg: #f4f7fb;
+  --surface: #ffffff;
+  --surface-soft: #eaf1fa;
+  --ink: #18263a;
+  --muted: #607086;
+  --line: #cbd7e5;
+  --accent: #175da8;
+  --accent-strong: #0d447e;
+  --accent-soft: #dceafb;
+  --good: #08775d;
+  --good-soft: #ddf4ec;
+  --warn: #a34a16;
+  --warn-soft: #fff0df;
+  --danger: #a9343a;
+  --danger-soft: #fde8e9;
+  --shadow: 0 14px 40px rgba(28, 54, 87, 0.10);
+  --font-display: "Noto Serif SC", "Songti SC", serif;
+  --font-body: "Noto Sans SC", "PingFang SC", sans-serif;
+  --font-utility: "Noto Sans SC", "PingFang SC", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #101823;
+    --surface: #172231;
+    --surface-soft: #1e3045;
+    --ink: #e7eef7;
+    --muted: #a7b5c6;
+    --line: #33475d;
+    --accent: #75b7ff;
+    --accent-strong: #a9d3ff;
+    --accent-soft: #183a5f;
+    --good: #6ed7b9;
+    --good-soft: #153d36;
+    --warn: #ffb77d;
+    --warn-soft: #4b2e1b;
+    --danger: #ff9da2;
+    --danger-soft: #4c252a;
+    --shadow: 0 16px 44px rgba(0, 0, 0, 0.28);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #101823;
+  --surface: #172231;
+  --surface-soft: #1e3045;
+  --ink: #e7eef7;
+  --muted: #a7b5c6;
+  --line: #33475d;
+  --accent: #75b7ff;
+  --accent-strong: #a9d3ff;
+  --accent-soft: #183a5f;
+  --good: #6ed7b9;
+  --good-soft: #153d36;
+  --warn: #ffb77d;
+  --warn-soft: #4b2e1b;
+  --danger: #ff9da2;
+  --danger-soft: #4c252a;
+  --shadow: 0 16px 44px rgba(0, 0, 0, 0.28);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  padding-block: 0 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.75;
+  overflow-x: hidden;
+}
+a { color: var(--accent-strong); text-underline-offset: 3px; }
+a:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.shell { width: min(1120px, 100%); margin: 0 auto; }
+.hero {
+  margin-inline: calc(-1 * max(16px, env(safe-area-inset-left, 0px)));
+  padding-block: 52px 44px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: linear-gradient(135deg, var(--accent-strong), var(--accent));
+  color: #ffffff;
+}
+.hero-inner { width: min(1120px, 100%); margin: 0 auto; display: grid; grid-template-columns: 1.45fr 0.75fr; gap: 36px; align-items: end; }
+.eyebrow { font: 700 0.77rem/1.2 var(--font-utility); letter-spacing: 0.14em; text-transform: uppercase; opacity: 0.82; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { margin-top: 12px; font-size: clamp(2.3rem, 6vw, 4.4rem); line-height: 1.06; letter-spacing: -0.035em; }
+.hero p { max-width: 650px; margin: 20px 0 0; font-size: 1.08rem; opacity: 0.92; }
+.version-box { border-left: 1px solid rgba(255,255,255,0.35); padding-left: 24px; display: grid; gap: 10px; }
+.version-box strong { font-size: 1.05rem; }
+.version-box span { font-size: 0.9rem; opacity: 0.82; }
+.quick-rule { margin-top: -22px; position: relative; background: var(--surface); border: 1px solid var(--line); box-shadow: var(--shadow); padding: 26px 28px; display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: center; }
+.rule-mark { width: 54px; height: 54px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-strong); font: 700 1.35rem/1 var(--font-utility); border-radius: 50%; }
+.quick-rule strong { display: block; font-size: 1.12rem; margin-bottom: 3px; }
+.quick-rule p { margin: 0; color: var(--muted); }
+.layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 42px; align-items: start; padding-top: 42px; }
+.index { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 18px); display: grid; gap: 7px; padding: 20px; border-left: 3px solid var(--accent); background: var(--surface); }
+.index h2 { font: 700 0.78rem/1.2 var(--font-utility); letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 7px; }
+.index a { display: block; color: var(--ink); text-decoration: none; font-size: 0.91rem; padding: 5px 0; }
+.index a:hover { color: var(--accent); }
+.content { min-width: 0; display: grid; gap: 54px; }
+.section { scroll-margin-top: 24px; display: grid; gap: 22px; }
+.section-head { display: grid; grid-template-columns: auto 1fr; gap: 16px; align-items: start; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.section-number { font: 700 0.82rem/1 var(--font-utility); color: var(--accent-strong); background: var(--accent-soft); padding: 8px 9px; border-radius: 4px; font-variant-numeric: tabular-nums; }
+h2 { font-size: clamp(1.55rem, 3vw, 2.15rem); line-height: 1.25; }
+h3 { font-size: 1.1rem; line-height: 1.45; }
+p { margin: 0; }
+.lead { color: var(--muted); max-width: 68ch; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.role { background: var(--surface); border-top: 3px solid var(--accent); padding: 20px; min-width: 0; }
+.role h3 { margin-bottom: 8px; }
+.role p { color: var(--muted); }
+.callout { padding: 18px 20px; border-left: 4px solid var(--accent); background: var(--accent-soft); }
+.callout.warn { border-color: var(--warn); background: var(--warn-soft); }
+.callout.danger { border-color: var(--danger); background: var(--danger-soft); }
+.callout.good { border-color: var(--good); background: var(--good-soft); }
+.callout strong { display: block; margin-bottom: 4px; }
+.steps { display: grid; gap: 0; counter-reset: steps; }
+.step { counter-increment: steps; display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 18px; padding: 24px 0; border-bottom: 1px solid var(--line); }
+.step:last-child { border-bottom: 0; }
+.step::before { content: counter(steps); width: 46px; height: 46px; display: grid; place-items: center; border: 1px solid var(--line); color: var(--accent-strong); font: 700 1rem/1 var(--font-utility); font-variant-numeric: tabular-nums; }
+.step-body { min-width: 0; display: grid; gap: 10px; }
+.step-body ul, .plain-list { margin: 0; padding-left: 1.25rem; display: grid; gap: 5px; }
+.object-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.object { padding: 14px; background: var(--surface-soft); border: 1px solid var(--line); }
+.object b { display: block; color: var(--accent-strong); }
+.object span { color: var(--muted); font-size: 0.88rem; }
+.table-wrap { overflow-x: auto; border: 1px solid var(--line); background: var(--surface); }
+table { width: 100%; border-collapse: collapse; min-width: 650px; }
+th, td { padding: 14px 16px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+th { font: 700 0.8rem/1.3 var(--font-utility); letter-spacing: 0.04em; color: var(--muted); background: var(--surface-soft); }
+tr:last-child td { border-bottom: 0; }
+.status { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; white-space: nowrap; }
+.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.status.present { color: var(--good); }
+.status.unknown { color: var(--warn); }
+.status.stop { color: var(--danger); }
+.code { display: block; margin-top: 3px; color: var(--muted); font: 500 0.75rem/1.25 var(--font-utility); }
+.standard-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); }
+.standard { padding: 20px; min-width: 0; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.standard:nth-child(3n) { border-right: 0; }
+.standard:nth-last-child(-n+3) { border-bottom: 0; }
+.standard b { display: block; margin-bottom: 6px; color: var(--accent-strong); }
+.standard p { color: var(--muted); font-size: 0.92rem; }
+.checklist { display: grid; gap: 11px; }
+.check-item { display: grid; grid-template-columns: 24px 1fr; gap: 11px; align-items: start; padding: 13px 15px; background: var(--surface); border: 1px solid var(--line); }
+.check-item input { width: 18px; height: 18px; margin-top: 3px; accent-color: var(--good); }
+.pilot { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.pilot-item { padding: 17px; background: var(--surface); border: 1px solid var(--line); }
+.pilot-item b { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
+.pilot-item span { display: block; color: var(--muted); font-size: 0.88rem; margin-top: 4px; }
+.footer { margin-top: 60px; border-top: 1px solid var(--line); padding-top: 26px; color: var(--muted); display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; font-size: 0.86rem; }
+@media (max-width: 860px) {
+  .hero-inner { grid-template-columns: 1fr; }
+  .version-box { border-left: 0; border-top: 1px solid rgba(255,255,255,0.35); padding-left: 0; padding-top: 18px; }
+  .layout { grid-template-columns: 1fr; gap: 30px; }
+  .index { position: static; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .index h2 { grid-column: 1 / -1; }
+  .standard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .standard:nth-child(3n) { border-right: 1px solid var(--line); }
+  .standard:nth-child(2n) { border-right: 0; }
+  .standard:nth-last-child(-n+3) { border-bottom: 1px solid var(--line); }
+  .standard:nth-last-child(-n+2) { border-bottom: 0; }
+  .pilot { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .hero { padding-block: 38px 34px; }
+  .quick-rule { grid-template-columns: 1fr; }
+  .grid-2, .object-strip, .pilot { grid-template-columns: 1fr; }
+  .index { grid-template-columns: 1fr; }
+  .step { grid-template-columns: 44px minmax(0, 1fr); gap: 12px; }
+  .step::before { width: 38px; height: 38px; }
+  .standard-grid { grid-template-columns: 1fr; }
+  .standard, .standard:nth-child(2n), .standard:nth-child(3n) { border-right: 0; border-bottom: 1px solid var(--line); }
+  .standard:last-child { border-bottom: 0; }
+}
+@media print {
+  body { background: #ffffff; color: #111827; padding: 0; font-size: 11pt; }
+  .hero { margin: 0; background: #174f86; }
+  .index { display: none; }
+  .layout { grid-template-columns: 1fr; }
+  .content { gap: 32px; }
+  .section { break-inside: avoid; }
+  .quick-rule, .role, .callout, .object, .table-wrap, .standard-grid, .check-item, .pilot-item { box-shadow: none; }
+}
+</style>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div>
+      <div class="eyebrow">事故材料人工基准工作规范</div>
+      <h1>人工 Gold 标注手册</h1>
+      <p>供事故业务标注人员、复核人员和裁定人员使用。手册只说明怎么标、怎么判断、什么结果可以交付。</p>
+    </div>
+    <div class="version-box">
+      <strong>试行版 · 首批 6 份</strong>
+      <span>适用材料：01、06、08、13、19、20</span>
+      <span>每份材料形成一份独立人工基准答案</span>
+    </div>
+  </div>
+</header>
+
+<main class="shell">
+  <div class="quick-rule">
+    <div class="rule-mark">准</div>
+    <div>
+      <strong>第一原则：只依据材料和已核定业务事实标注。</strong>
+      <p>第一标注人不得照抄模型结果。模型只能辅助定位，不能直接成为标准答案。</p>
+    </div>
+  </div>
+
+  <div class="layout">
+    <nav class="index" aria-label="手册目录">
+      <h2>快速目录</h2>
+      <a href="#purpose">手册目的</a>
+      <a href="#roles">人员分工</a>
+      <a href="#workflow">操作步骤</a>
+      <a href="#presence">状态判断</a>
+      <a href="#evidence">证据标准</a>
+      <a href="#legal">法律结论与关系</a>
+      <a href="#review">复核与裁定</a>
+      <a href="#acceptance">交付标准</a>
+      <a href="#mistakes">常见错误</a>
+      <a href="#pilot">首批安排</a>
+    </nav>
+
+    <article class="content">
+      <section class="section" id="purpose">
+        <div class="section-head">
+          <div class="section-number">01</div>
+          <div><h2>手册目的</h2></div>
+        </div>
+        <p class="lead">人工 Gold 是一份材料经过人工核对后形成的标准答案。系统用它检查模型是否漏提、错提、归错主体或引用错证据。</p>
+        <div class="grid-2">
+          <div class="callout good">
+            <strong>它应该是什么</strong>
+            <p>逐条有依据、对象清楚、状态明确、经过复核的人工基准。</p>
+          </div>
+          <div class="callout danger">
+            <strong>它不是什么</strong>
+            <p>不是模型答案的修正版，不是正式法律发布结果，也不是把所有字段强行填满。</p>
+          </div>
+        </div>
+        <div class="callout warn">
+          <strong>材料保护</strong>
+          <p>材料、基准答案、证据摘录和审核记录只保存在批准的受控目录。不得上传到公共平台，不得放入普通代码仓库，不得在群聊或工单中粘贴身份信息。</p>
+        </div>
+      </section>
+
+      <section class="section" id="roles">
+        <div class="section-head">
+          <div class="section-number">02</div>
+          <div><h2>人员分工</h2></div>
+        </div>
+        <div class="grid-2">
+          <div class="role">
+            <h3>第一标注人</h3>
+            <p>独立阅读材料，登记对象，填写事实、法律结论、关系和证据。全过程不参考模型答案。</p>
+          </div>
+          <div class="role">
+            <h3>第二复核人</h3>
+            <p>重新阅读材料，逐条核对主体、取值、状态、证据和关系。不能只看第一人的结果。</p>
+          </div>
+          <div class="role">
+            <h3>业务裁定人</h3>
+            <p>处理违法、原因、责任、复杂关系和来源冲突等争议。给出最终裁定并记录理由。</p>
+          </div>
+          <div class="role">
+            <h3>资料管理员</h3>
+            <p>固定材料版本，管理脱敏编号、文件哈希、使用权限、标注版本和交付清单。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="workflow">
+        <div class="section-head">
+          <div class="section-number">03</div>
+          <div><h2>七步操作流程</h2></div>
+        </div>
+        <div class="steps">
+          <div class="step">
+            <div class="step-body">
+              <h3>确认材料身份</h3>
+              <ul>
+                <li>确认材料编号、页数和版本完整。</li>
+                <li>使用脱敏测试编号，不把业务事故号写入对外评测副本。</li>
+                <li>材料有变更时必须另建版本，不能直接覆盖旧标注。</li>
+              </ul>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <h3>登记本案对象</h3>
+              <p>先列清事故中真正出现的对象，再标字段。不存在的对象不要编造。</p>
+              <div class="object-strip">
+                <div class="object"><b>事故</b><span>整起事故，固定编号 ACC</span></div>
+                <div class="object"><b>参与方</b><span>人员或责任主体，P01 起</span></div>
+                <div class="object"><b>车辆</b><span>每辆车独立编号，V01 起</span></div>
+                <div class="object"><b>事件</b><span>碰撞、倒地等，E01 起</span></div>
+                <div class="object"><b>道路</b><span>需要时登记，R01 起</span></div>
+                <div class="object"><b>路口</b><span>需要时登记，I01 起</span></div>
+                <div class="object"><b>组织</b><span>单位或机构，O01 起</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <h3>逐项检查字段</h3>
+              <ul>
+                <li>按统一字段表检查每个适用对象。</li>
+                <li>事故时间、地点、天气等挂在事故上。</li>
+                <li>参与者类型和行为挂在对应参与方上。</li>
+                <li>车型、车辆用途等挂在对应车辆上。</li>
+                <li>道路、路口和碰撞信息挂在对应对象或事件上。</li>
+              </ul>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <h3>选择记录状态</h3>
+              <p>每个已检查的槽位都要明确是有记载、未提及、明确否定、不适用、无法辨认、来源冲突，还是暂待判断。</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <h3>填写原文值和证据</h3>
+              <ul>
+                <li>原文值按材料表达填写，不自行改写法律含义。</li>
+                <li>需要归一时，另填人工确认的标准说法。</li>
+                <li>每条有值记录附上页码和最短支持原文。</li>
+                <li>标准词表没有的内容不得自行创造正式标签。</li>
+              </ul>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <h3>单独处理违法、原因、责任和关系</h3>
+              <p>这些记录不能混入普通事实。必须写清对应主体、证据和事件。没有原文依据的因果关系不能补推断。</p>
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-body">
+              <h3>自检并提交复核</h3>
+              <p>第一人完成自检后保持“草稿”状态。只有第二人复核一致，或裁定人完成裁定，记录才能进入正式评分。</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="presence">
+        <div class="section-head">
+          <div class="section-number">04</div>
+          <div><h2>七种状态怎么选</h2></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>状态</th><th>判断标准</th><th>填写要求</th></tr></thead>
+            <tbody>
+              <tr><td><span class="status present">有记载</span><span class="code">present</span></td><td>材料明确肯定记载。</td><td>填写原文值，并附证据。</td></tr>
+              <tr><td><span class="status present">明确否定</span><span class="code">explicit_negative</span></td><td>材料明确写明某事实不成立，例如明确记载“未超速”。</td><td>保留否定原文，并附证据。</td></tr>
+              <tr><td><span class="status unknown">未提及</span><span class="code">not_mentioned</span></td><td>材料没有说到这个字段。</td><td>不要填“无”或“否”。</td></tr>
+              <tr><td><span class="status unknown">不适用</span><span class="code">not_applicable</span></td><td>这个字段对当前对象不成立。</td><td>说明是对象不适用，不是材料漏写。</td></tr>
+              <tr><td><span class="status stop">无法辨认</span><span class="code">unreadable</span></td><td>原文模糊、遮挡或无法可靠识别。</td><td>不得猜测，留待人工核查原件。</td></tr>
+              <tr><td><span class="status stop">来源冲突</span><span class="code">source_conflict</span></td><td>两个可信来源的记录不一致。</td><td>两边都保留，不自行选边。</td></tr>
+              <tr><td><span class="status stop">待判断</span><span class="code">needs_review</span></td><td>标注人无法确定，应交复核或裁定。</td><td>记录疑点，不进入正式评分。</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout danger">
+          <strong>沉默不等于否定</strong>
+          <p>材料没写车速，只能标“未提及”。只有材料明确写明“未超速”时，才能标“明确否定”。</p>
+        </div>
+      </section>
+
+      <section class="section" id="evidence">
+        <div class="section-head">
+          <div class="section-number">05</div>
+          <div><h2>证据标准</h2></div>
+        </div>
+        <div class="standard-grid">
+          <div class="standard"><b>页码准确</b><p>页码从材料第一页开始计算，不按扫描文件内部编号猜测。</p></div>
+          <div class="standard"><b>摘录最短</b><p>只摘录能支持本条记录的必要句子或短语，不复制整页。</p></div>
+          <div class="standard"><b>语义直接</b><p>证据必须直接支持该事实，不能用相邻内容代替。</p></div>
+          <div class="standard"><b>主体明确</b><p>多人多车材料中，摘录要能确认内容属于哪个对象。</p></div>
+          <div class="standard"><b>一条一证</b><p>一段证据支持多个不同结论时，也要分别核对后引用。</p></div>
+          <div class="standard"><b>保留原意</b><p>不得删去否定词、条件、时间或责任限定语。</p></div>
+        </div>
+        <div class="callout warn">
+          <strong>系统找到摘录，不代表结论正确</strong>
+          <p>字符串能在原文中找到，只能证明位置存在。复核人仍要判断它是否真正支持该项结论。</p>
+        </div>
+      </section>
+
+      <section class="section" id="legal">
+        <div class="section-head">
+          <div class="section-number">06</div>
+          <div><h2>法律结论与关系</h2></div>
+        </div>
+        <div class="grid-2">
+          <div class="role">
+            <h3>违法</h3>
+            <p>每项违法单独记录，并挂在文书指明的参与方或组织上。一人可以有多项违法。</p>
+          </div>
+          <div class="role">
+            <h3>原因</h3>
+            <p>只记录文书明确认定的原因。违法与原因同时出现，不代表两者自动相关。</p>
+          </div>
+          <div class="role">
+            <h3>责任</h3>
+            <p>每个责任主体一条。文书写“无责任”时，也属于有明确记载的责任结果。</p>
+          </div>
+          <div class="role">
+            <h3>事件关系</h3>
+            <p>写清谁做了什么、作用于谁、发生在哪个事件。碰撞方向和事件顺序不能对调。</p>
+          </div>
+        </div>
+        <div class="callout danger">
+          <strong>禁止补推断</strong>
+          <p>材料只写了违法，但没有明确说该违法导致事故时，不得自行建立因果关系。模型推断也不能代替文书结论。</p>
+        </div>
+      </section>
+
+      <section class="section" id="review">
+        <div class="section-head">
+          <div class="section-number">07</div>
+          <div><h2>复核与裁定</h2></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>工作状态</th><th>适用情形</th><th>是否进入评分</th></tr></thead>
+            <tbody>
+              <tr><td><b>草稿</b><span class="code">draft</span></td><td>第一标注人完成，尚未复核。</td><td>否</td></tr>
+              <tr><td><b>已复核</b><span class="code">checked</span></td><td>第二人独立核对后，与第一人一致。</td><td>是</td></tr>
+              <tr><td><b>争议中</b><span class="code">disputed</span></td><td>两人对主体、值、证据或关系有分歧。</td><td>否</td></tr>
+              <tr><td><b>专业裁定</b><span class="code">specialist_review</span></td><td>授权业务人员处理争议并给出最终结论。</td><td>是</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="lead">违法、原因、责任、伤亡、来源冲突和复杂关系必须重点复核。分歧原因、裁定人、裁定日期和版本变更另行留痕。</p>
+      </section>
+
+      <section class="section" id="acceptance">
+        <div class="section-head">
+          <div class="section-number">08</div>
+          <div><h2>交付标准</h2></div>
+        </div>
+        <p class="lead">每份材料只有同时满足以下要求，才算完成。可将本清单用于标注人自检和复核人验收。</p>
+        <div class="checklist">
+          <label class="check-item"><input id="check-1" type="checkbox"><span>材料编号、页数和版本已经确认，材料没有被替换。</span></label>
+          <label class="check-item"><input id="check-2" type="checkbox"><span>事故、参与方、车辆、道路、路口、事件和组织对象已经登记完整。</span></label>
+          <label class="check-item"><input id="check-3" type="checkbox"><span>每个已检查字段都有明确状态，未提及没有被误填成否定。</span></label>
+          <label class="check-item"><input id="check-4" type="checkbox"><span>每条有值记录都挂在正确对象上，原文值没有改变法律含义。</span></label>
+          <label class="check-item"><input id="check-5" type="checkbox"><span>所有“有记载”和“明确否定”记录都有准确页码和最短证据。</span></label>
+          <label class="check-item"><input id="check-6" type="checkbox"><span>违法、原因、责任和关系已分开记录，没有自行补充因果。</span></label>
+          <label class="check-item"><input id="check-7" type="checkbox"><span>多人多车材料中的主体、车辆、事件和碰撞方向已经逐条核对。</span></label>
+          <label class="check-item"><input id="check-8" type="checkbox"><span>第一标注人没有照抄模型结果，第二复核人已经独立阅读材料。</span></label>
+          <label class="check-item"><input id="check-9" type="checkbox"><span>所有争议项均保持“争议中”或完成专业裁定，没有强行通过。</span></label>
+          <label class="check-item"><input id="check-10" type="checkbox"><span>材料、基准答案和审核记录保存在批准目录，没有进入公共平台或代码仓库。</span></label>
+        </div>
+        <div class="callout good">
+          <strong>通过条件</strong>
+          <p>清单全部完成，且所有进入评分的记录状态均为“已复核”或“专业裁定”。</p>
+        </div>
+      </section>
+
+      <section class="section" id="mistakes">
+        <div class="section-head">
+          <div class="section-number">09</div>
+          <div><h2>常见错误</h2></div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>错误做法</th><th>正确做法</th></tr></thead>
+            <tbody>
+              <tr><td>把模型结果改一改就作为 Gold。</td><td>第一标注人独立读材料，模型只用于事后辅助检查。</td></tr>
+              <tr><td>文书没写就填“否”或“无”。</td><td>标为“未提及”，不要创造否定结论。</td></tr>
+              <tr><td>把车型、行为或责任挂到错误主体。</td><td>先登记对象，再按对象逐项标注。</td></tr>
+              <tr><td>多人多车只记录一个笼统事故标签。</td><td>分别记录参与方、车辆、事件及其关系。</td></tr>
+              <tr><td>违法、原因和责任混在普通事实里。</td><td>三类法律结论分别记录，并保留主体与证据。</td></tr>
+              <tr><td>用整页文字作为证据。</td><td>截取能直接支持本条记录的最短原文。</td></tr>
+              <tr><td>碰撞双方方向随意对调。</td><td>按文书记载保留主体、客体和事件方向。</td></tr>
+              <tr><td>有争议也直接标为已复核。</td><td>保持“争议中”，交授权人员裁定。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section" id="pilot">
+        <div class="section-head">
+          <div class="section-number">10</div>
+          <div><h2>首批 6 份安排</h2></div>
+        </div>
+        <p class="lead">先完成 01 并组织一次规则复盘。确认对象编号、字段状态和证据标准没有歧义后，再继续其余五份。</p>
+        <div class="pilot">
+          <div class="pilot-item"><b>01</b><span>单主体基础样本。先验证全流程。</span></div>
+          <div class="pilot-item"><b>06</b><span>行人与机动车关系。</span></div>
+          <div class="pilot-item"><b>08</b><span>开门碰撞与证据定位。</span></div>
+          <div class="pilot-item"><b>13</b><span>复杂多车与不利环境。</span></div>
+          <div class="pilot-item"><b>19</b><span>超多车辆与多主体关系。</span></div>
+          <div class="pilot-item"><b>20</b><span>非接触事故与因果边界。</span></div>
+        </div>
+        <div class="callout warn">
+          <strong>先解决规则问题，再扩大标注</strong>
+          <p>如果 01 暴露出字段归属、状态选择或证据标准不清，应先统一规则。不要把同一个问题复制到全部材料。</p>
+        </div>
+      </section>
+    </article>
+  </div>
+
+  <footer class="footer">
+    <span>人工 Gold 标注手册 · 试行版</span>
+    <span>适用范围：事故材料解析质量评测，不作为法律结果发布依据</span>
+  </footer>
+</main>
