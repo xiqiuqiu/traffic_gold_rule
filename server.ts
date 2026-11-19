@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'node:fs/promises';
 import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +14,20 @@ import {
   isTimeoutError,
   parseStructuredModelJson,
 } from './src/utils/aiResponseParser';
+import {
+  appendSystemAuditEvent,
+  loadSystemState,
+  resolveSafeScanDirectory,
+  saveSystemState,
+  scanServerDirectoryForTasks,
+} from './src/server/systemStore';
+import {
+  AnalysisTask,
+  BatchScheduleConfig,
+  ExtendedRole,
+  RolePermissionMatrix,
+  SystemAuditEvent,
+} from './src/types/system';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -505,6 +520,250 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  app.get('/api/system/bootstrap', async (_req, res) => {
+    try {
+      const state = await loadSystemState();
+      res.json(state);
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : '加载系统状态失败' });
+    }
+  });
+
+  app.put('/api/system/schedule', async (req, res) => {
+    try {
+      const body = (req.body || {}) as {
+        scheduleConfig?: Partial<BatchScheduleConfig>;
+        actorName?: string;
+        actorRole?: ExtendedRole;
+      };
+      const state = await loadSystemState();
+      const nextSchedule: BatchScheduleConfig = {
+        ...state.scheduleConfig,
+        ...(body.scheduleConfig || {}),
+        scanDirectory:
+          (body.scheduleConfig?.scanDirectory ?? state.scheduleConfig.scanDirectory).trim() ||
+          './public/assets/aistudio',
+        filePattern:
+          (body.scheduleConfig?.filePattern ?? state.scheduleConfig.filePattern).trim() || '*.pdf',
+      };
+      const auditEvent: SystemAuditEvent = {
+        id: `AUD-${Date.now().toString(36)}`,
+        timestamp: new Date().toISOString(),
+        category: 'schedule',
+        actorRole: body.actorRole || 'admin',
+        actorName: body.actorName || '系统管理员',
+        action: '更新定时批量扫描配置',
+        targetRef: nextSchedule.scanDirectory,
+        detail: `每日 ${nextSchedule.dailyTime} · ${nextSchedule.enabled ? '已启用' : '已暂停'} · ${
+          nextSchedule.autoRunAi ? '自动执行大模型提取' : '仅入库待命'
+        }`,
+      };
+      const saved = await saveSystemState({
+        ...state,
+        scheduleConfig: nextSchedule,
+        auditLogs: [auditEvent, ...state.auditLogs].slice(0, 500),
+      });
+      res.json({ scheduleConfig: saved.scheduleConfig, auditEvent });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : '保存调度配置失败' });
+    }
+  });
+
+  app.post('/api/system/schedule/scan', async (req, res) => {
+    try {
+      const body = (req.body || {}) as {
+        directory?: string;
+        filePattern?: string;
+        autoRunAi?: boolean;
+        forceRequeue?: boolean;
+        actorName?: string;
+      };
+      const result = await scanServerDirectoryForTasks({
+        directory: body.directory,
+        filePattern: body.filePattern,
+        autoRunAi: body.autoRunAi,
+        forceRequeue: body.forceRequeue,
+        actorName: body.actorName || '系统管理员',
+      });
+      const updated = await loadSystemState();
+      res.json({
+        ...result,
+        scheduleConfig: updated.scheduleConfig,
+        tasks: updated.tasks,
+        auditLogs: updated.auditLogs,
+      });
+    } catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : '扫描服务器目录失败' });
+    }
+  });
+
+  app.get('/api/system/pdf', async (req, res) => {
+    try {
+      const rawPath = typeof req.query.path === 'string' ? req.query.path : '';
+      if (!rawPath) {
+        res.status(400).json({ error: '缺少文件 path 参数' });
+        return;
+      }
+      const state = await loadSystemState();
+      const allowedDirs = [
+        resolveSafeScanDirectory(state.scheduleConfig.scanDirectory),
+        resolveSafeScanDirectory('./public/assets/aistudio'),
+      ];
+      const targetPath = path.resolve(rawPath);
+      const isAllowed = allowedDirs.some(
+        (dir) => targetPath === dir || targetPath.startsWith(dir + path.sep),
+      );
+      if (!isAllowed || !/\.pdf$/i.test(targetPath)) {
+        res.status(403).json({ error: '仅允许读取已配置扫描目录内的 PDF 文件' });
+        return;
+      }
+      const buf = await fs.readFile(targetPath);
+      res.setHeader('Content-Type', 'application/pdf');
+      res.send(buf);
+    } catch {
+      res.status(404).json({ error: '未找到对应的服务器 PDF 文件' });
+    }
+  });
+
+  app.post('/api/system/tasks', async (req, res) => {
+    try {
+      const body = (req.body || {}) as { task?: AnalysisTask; auditDetail?: string };
+      if (!body.task?.taskId) {
+        res.status(400).json({ error: '缺少任务主体数据' });
+        return;
+      }
+      const state = await loadSystemState();
+      const nextTasks = [
+        body.task,
+        ...state.tasks.filter((t) => t.taskId !== body.task!.taskId),
+      ];
+      const auditEvent: SystemAuditEvent = {
+        id: `AUD-${Date.now().toString(36)}`,
+        timestamp: new Date().toISOString(),
+        category: 'task_pipeline',
+        actorRole: body.task.createdByRole,
+        actorName: body.task.createdByName,
+        action: body.task.source === 'manual_upload' ? '手动上传材料创建任务' : '创建批量分析任务',
+        targetRef: body.task.caseId,
+        accidentBizId: body.task.accidentBizId || undefined,
+        detail: body.auditDetail || `${body.task.filename}（${body.task.stageLabel}）`,
+      };
+      await saveSystemState({
+        ...state,
+        tasks: nextTasks,
+        auditLogs: [auditEvent, ...state.auditLogs].slice(0, 500),
+      });
+      res.json({ task: body.task, auditEvent });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : '创建任务失败' });
+    }
+  });
+
+  app.patch('/api/system/tasks/:taskId', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const patch = (req.body || {}) as Partial<AnalysisTask>;
+      const state = await loadSystemState();
+      const idx = state.tasks.findIndex((t) => t.taskId === taskId);
+      if (idx === -1) {
+        res.status(404).json({ error: '未找到指定任务' });
+        return;
+      }
+      const updatedTask: AnalysisTask = {
+        ...state.tasks[idx],
+        ...patch,
+        updatedAt: new Date().toISOString(),
+      };
+      const nextTasks = state.tasks.map((t, i) => (i === idx ? updatedTask : t));
+      await saveSystemState({ ...state, tasks: nextTasks });
+      res.json({ task: updatedTask });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : '更新任务状态失败' });
+    }
+  });
+
+  app.delete('/api/system/tasks/:taskId', async (req, res) => {
+    try {
+      const { taskId } = req.params;
+      const state = await loadSystemState();
+      const existing = state.tasks.find((t) => t.taskId === taskId);
+      const nextTasks = state.tasks.filter((t) => t.taskId !== taskId);
+      if (existing) {
+        await saveSystemState({ ...state, tasks: nextTasks });
+        await appendSystemAuditEvent({
+          category: 'task_pipeline',
+          actorRole: 'admin',
+          actorName: typeof req.query.actorName === 'string' ? req.query.actorName : '操作员',
+          action: '移除分析任务记录',
+          targetRef: existing.caseId,
+          accidentBizId: existing.accidentBizId || undefined,
+          detail: `删除任务 ${existing.taskId}（${existing.filename}）`,
+        });
+      }
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : '删除任务失败' });
+    }
+  });
+
+  app.post('/api/system/audit', async (req, res) => {
+    try {
+      const body = (req.body || {}) as Partial<SystemAuditEvent>;
+      if (!body.action || !body.targetRef) {
+        res.status(400).json({ error: '缺少 action 或 targetRef' });
+        return;
+      }
+      const created = await appendSystemAuditEvent({
+        category: body.category || 'annotation',
+        actorRole: body.actorRole || 'annotator',
+        actorName: body.actorName || '系统用户',
+        action: body.action,
+        targetRef: body.targetRef,
+        accidentBizId: body.accidentBizId,
+        detail: body.detail || '',
+        beforeValue: body.beforeValue,
+        afterValue: body.afterValue,
+      });
+      res.json({ auditEvent: created });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : '写入审计日志失败' });
+    }
+  });
+
+  app.put('/api/system/permissions', async (req, res) => {
+    try {
+      const body = (req.body || {}) as {
+        rolePermissions?: RolePermissionMatrix;
+        actorName?: string;
+        actorRole?: ExtendedRole;
+        changeSummary?: string;
+      };
+      if (!body.rolePermissions) {
+        res.status(400).json({ error: '缺少 rolePermissions 参数' });
+        return;
+      }
+      const state = await loadSystemState();
+      const auditEvent: SystemAuditEvent = {
+        id: `AUD-${Date.now().toString(36)}`,
+        timestamp: new Date().toISOString(),
+        category: 'permission',
+        actorRole: body.actorRole || 'admin',
+        actorName: body.actorName || '系统管理员',
+        action: '更新角色权限矩阵',
+        targetRef: 'RBAC-MATRIX',
+        detail: body.changeSummary || '调整系统角色功能操作权限矩阵配置',
+      };
+      const saved = await saveSystemState({
+        ...state,
+        rolePermissions: body.rolePermissions,
+        auditLogs: [auditEvent, ...state.auditLogs].slice(0, 500),
+      });
+      res.json({ rolePermissions: saved.rolePermissions, auditEvent });
+    } catch (err) {
+      res.status(500).json({ error: err instanceof Error ? err.message : '更新权限配置失败' });
+    }
+  });
+
   app.post('/api/ai/models', async (req, res) => {
     try {
       const body = (req.body || {}) as { baseUrl?: string; apiKey?: string };
@@ -701,6 +960,26 @@ async function startServer() {
       res.sendFile(path.join(distDir, 'index.html'));
     });
   }
+
+  // Lightweight daily scheduler tick (checks once per minute if HH:MM matches scheduleConfig.dailyTime)
+  let lastScheduledDay = '';
+  const scheduleTimer = setInterval(async () => {
+    try {
+      const state = await loadSystemState();
+      if (!state.scheduleConfig.enabled) return;
+      const now = new Date();
+      const hh = String(now.getHours()).padStart(2, '0');
+      const mm = String(now.getMinutes()).padStart(2, '0');
+      const todayKey = `${now.toISOString().slice(0, 10)}_${state.scheduleConfig.dailyTime}`;
+      if (`${hh}:${mm}` === state.scheduleConfig.dailyTime && lastScheduledDay !== todayKey) {
+        lastScheduledDay = todayKey;
+        await scanServerDirectoryForTasks({ actorName: '每日定时调度器' });
+      }
+    } catch {
+      // Ignore background scan tick errors when directory isn't mounted
+    }
+  }, 60_000);
+  scheduleTimer.unref?.();
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Gold workbench server running at http://localhost:${PORT}`);
