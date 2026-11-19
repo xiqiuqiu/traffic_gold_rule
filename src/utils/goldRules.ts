@@ -1,3 +1,4 @@
+import { getVerifiedLiabilitySource } from './liabilitySourceKey';
 import {
   ACCEPTANCE_CHECKLIST_ITEMS,
   ENTITY_KIND_META,
@@ -213,13 +214,13 @@ export function validateLegalConclusion(
 
   if (item.category === 'liability' && item.subjectId && context?.allLegalConclusions) {
     const sameSubjectLiabilities = context.allLegalConclusions.filter(
-      (l) => l.category === 'liability' && l.subjectId === item.subjectId,
+      (l) => l.category === 'liability' && hasLiabilityScopeConflict(l, item),
     );
     if (sameSubjectLiabilities.length > 1) {
       issues.push({
         code: 'DUPLICATE_SUBJECT_LIABILITY',
         severity: 'error',
-        message: `主体 ${item.subjectId} 存在 ${sameSubjectLiabilities.length} 条责任划分记录（每个责任主体仅允许保留一条责任划分）`,
+        message: `主体 ${item.subjectId} 在同一事故阶段存在 ${sameSubjectLiabilities.length} 条责任划分记录`,
       });
     }
   }
@@ -352,6 +353,16 @@ export function computeCaseReadiness(
   };
 }
 
+function exportLiabilitySource(item: LegalConclusionItem, doc: CaseDocument, mask: (text: string) => string) {
+  const source = getVerifiedLiabilitySource(item, doc);
+  if (!source) return {};
+  return { source_location: {
+    file_sha256: source.fileSha256, extraction_version: source.extractionVersion,
+    page: source.page, quote: mask(source.quote),
+    lines: source.lines.map(({ lineId, lineNumber, bbox }) => ({ line_id: lineId, line_number: lineNumber, bbox })),
+  } };
+}
+
 export function buildGoldExportPayload(caseDoc: CaseDocument, maskPii: boolean) {
   const readiness = computeCaseReadiness(caseDoc);
   const schemaByCode = new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f]));
@@ -446,6 +457,7 @@ export function buildGoldExportPayload(caseDoc: CaseDocument, maskPii: boolean) 
       liabilities: caseDoc.legalConclusions
         .filter((l) => l.category === 'liability')
         .map((l) => ({
+          ...exportLiabilitySource(l, caseDoc, maybeMask),
           id: l.id,
           subject_id: l.subjectId,
           event_id: l.eventId || null,
@@ -594,6 +606,8 @@ export function buildGoldV02ExportPayload(caseDoc: CaseDocument, maskPii: boolea
       const record: Record<string, unknown> = {
         record_id: l.id,
         field_code: 'D10.F060',
+        ...exportLiabilitySource(l, caseDoc, maybeMask),
+        ...(l.eventId ? { event_id: l.eventId } : {}),
         subject_id: l.subjectId,
         presence: l.presenceStatus,
       };
@@ -2628,6 +2642,12 @@ export function getScopedCauseCandidatesForLiability(
     primaryItems: [...sameSubject, ...foreignLinked],
     otherItems,
   };
+}
+
+type LiabilityScope = Pick<LegalConclusionItem, 'subjectId' | 'eventId'>;
+
+export function hasLiabilityScopeConflict(a: LiabilityScope, b: LiabilityScope): boolean {
+  return a.subjectId === b.subjectId && (a.eventId || '') === (b.eventId || '');
 }
 
 export function getSubjectLiabilityRecords(

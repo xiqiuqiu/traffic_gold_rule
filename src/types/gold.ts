@@ -56,7 +56,28 @@ export interface EvidenceItem {
   id: string;
   page: number;
   quote: string;
+  lineIds?: string[];
 }
+
+export interface LiabilitySourceLine {
+  lineId: string;
+  page: number;
+  lineNumber: number;
+  text: string;
+  bbox: [number, number, number, number];
+}
+
+export type LiabilitySourceLocation =
+  | {
+      status: 'verified';
+      fileSha256: string;
+      extractionVersion: string;
+      recordKey: string;
+      page: number;
+      quote: string;
+      lines: LiabilitySourceLine[];
+    }
+  | { status: 'needs_review'; reason: string };
 
 export interface EntityItem {
   id: string;
@@ -106,6 +127,7 @@ export interface LegalConclusionItem {
   linkConsistencyConfirmed?: boolean;
   linkConsistencyFingerprint?: string;
   evidences: EvidenceItem[];
+  sourceLocation?: LiabilitySourceLocation;
   reviewStatus: ReviewStatus;
   disputeReason: string;
   adjudicatorNote: string;

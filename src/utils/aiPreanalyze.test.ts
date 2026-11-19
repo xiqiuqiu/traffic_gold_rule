@@ -96,7 +96,7 @@ test('mapAiExtractionToCaseDraft reconciles entities, maps valid drafts, enforce
         presenceStatus: 'present',
         rawValue: '财产损失事故',
         normalizedValues: ['财产损失事故'],
-        evidences: [{ page: 1, quote: '事故类别：财产损失事故' }],
+        evidences: [{ page: 1, quote: '事故类别：财产损失事故', lineIds: ['31:2'] }],
       },
       {
         entityId: 'ACC',
@@ -157,6 +157,7 @@ test('mapAiExtractionToCaseDraft reconciles entities, maps valid drafts, enforce
   assert.equal(firstRun.validDraftCount, 3);
   assert.equal(firstRun.errorDraftCount, 1);
   assert.equal(firstRun.createdLegalCount, 1);
+  assert.deepEqual(firstRun.nextCase.fieldRecords.find(r => r.fieldCode === 'D01.F003')?.evidences[0].lineIds, ['31:2']);
 
   const notMentionedRec = firstRun.nextCase.fieldRecords.find(
     (r) => r.entityId === 'ACC' && r.fieldCode === 'D09.F053',
@@ -227,7 +228,7 @@ test('mapAiExtractionToCaseDraft aligns extracted violation conclusionLabel with
         rawText: '陈某驾驶机动车未按照操作规范安全驾驶、文明驾驶。',
         lawArticle: '《中华人民共和国道路交通安全法》第二十二条第一款',
         conclusionLabel: '未按照操作规范安全驾驶',
-        evidences: [{ page: 1, quote: '未按照操作规范安全驾驶' }],
+        evidences: [{ page: 3, quote: '未按照操作规范安全驾驶', lineIds: ['37:6'] }],
       },
     ],
   };
@@ -239,9 +240,11 @@ test('mapAiExtractionToCaseDraft aligns extracted violation conclusionLabel with
   assert.ok(vio);
   assert.equal(vio.conclusionLabel, '未按操作规范安全驾驶');
   assert.equal(vio.linkConsistencyConfirmed, false);
+  assert.equal(vio.evidences[0].page, 3);
+  assert.deepEqual(vio.evidences[0].lineIds, ['37:6']);
 });
 
-test('mapAiExtractionToCaseDraft enforces at most one liability record per subject even in overwrite_drafts mode', () => {
+test('mapAiExtractionToCaseDraft merges duplicate whole-accident liability for a subject even in overwrite_drafts mode', () => {
   const base = makeLocalEmptyCase();
   const payload: AiPreanalyzePayload = {
     entities: [
@@ -279,4 +282,36 @@ test('mapAiExtractionToCaseDraft enforces at most one liability record per subje
   assert.equal(p01Liabilities.length, 1);
 });
 
+test('同一主体分阶段责任分别保留，重跑保留人工修订和各阶段的原文行引用', () => {
+  const payload: AiPreanalyzePayload = {
+    entities: [
+      { id: 'P01', kind: 'P', label: '王小明' },
+      { id: 'E01', kind: 'E', label: '追尾碰撞', subtitle: '第一阶段碰撞' },
+      { id: 'E02', kind: 'E', label: '追尾碰撞', subtitle: '第二阶段碰撞' },
+    ],
+    fieldRecords: [],
+    legalConclusions: ['E01', 'E02'].map((eventId, i) => ({
+      category: 'liability',
+      subjectId: 'P01',
+      eventId,
+      presenceStatus: 'present',
+      rawText: '王小明承担全部责任',
+      conclusionLabel: '全部责任',
+      evidences: [{ page: 2, quote: '王小明承担全部责任', lineIds: [`19:${i + 1}`] }],
+    })),
+  };
+  const base = mapAiExtractionToCaseDraft(makeLocalEmptyCase(), {
+    ...payload, legalConclusions: payload.legalConclusions!.slice(0, 1),
+  }).nextCase;
+  base.legalConclusions[0].conclusionLabel = '人工核定结论';
+  base.legalConclusions[0].reviewStatus = 'checked';
+
+  for (const mergeMode of ['merge_missing', 'overwrite_drafts'] as const) {
+    const items = mapAiExtractionToCaseDraft(base, payload, { mergeMode }).nextCase.legalConclusions;
+    assert.deepEqual(items.map(it => it.eventId), ['E01', 'E02']);
+    assert.deepEqual(items[0], base.legalConclusions[0]);
+    assert.deepEqual(items[1].evidences[0].lineIds, ['19:2']);
+    assert.notEqual(items[0].id, items[1].id);
+  }
+});
 

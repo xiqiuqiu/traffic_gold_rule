@@ -7,6 +7,7 @@ import {
   CaseDocument,
   EntityItem,
   EntityKind,
+  EvidenceItem,
   FieldDefinition,
   FieldRecord,
   LegalConclusionItem,
@@ -18,6 +19,7 @@ import {
   buildControlledVocabOptions,
   deriveTimeBucket,
   generateNextEntityId,
+  hasLiabilityScopeConflict,
   scanViolationLinkMatches,
   validateFieldRecord,
 } from './goldRules';
@@ -32,13 +34,15 @@ export interface AiExtractedEntity {
   roleLabel?: string;
 }
 
+type AiEvidence = Omit<EvidenceItem, 'id'>;
+
 export interface AiExtractedFieldRecord {
   entityId: string;
   fieldCode: string;
   presenceStatus: PresenceStatus | string;
   rawValue: string;
   normalizedValues: string[];
-  evidences: Array<{ page: number; quote: string }>;
+  evidences: AiEvidence[];
 }
 
 export interface AiExtractedLegalItem {
@@ -49,7 +53,7 @@ export interface AiExtractedLegalItem {
   rawText: string;
   lawArticle?: string;
   conclusionLabel: string;
-  evidences: Array<{ page: number; quote: string }>;
+  evidences: AiEvidence[];
 }
 
 export interface AiPreanalyzePayload {
@@ -267,7 +271,9 @@ export function mapAiExtractionToCaseDraft(
 
     // 2. Match existing by normalized label + kind
     const normLabel = label.replace(/\s+/g, '').toLowerCase();
-    const existingByLabel = nextEntities.find(
+    // Numbered collision stages can share a description (for example two separate rear-end collisions).
+    const numberedEvent = kind === 'E' && isValidEntityIdForKind(rawId, kind);
+    const existingByLabel = !numberedEvent && nextEntities.find(
       (e) =>
         e.kind === kind &&
         e.label.replace(/\s+/g, '').toLowerCase() === normLabel,
@@ -308,8 +314,19 @@ export function mapAiExtractionToCaseDraft(
   let skippedProtectedFieldsCount = 0;
   const touchedDraftKeys = new Set<string>();
 
-  const maxPage = Math.max(1, activeCase.pageCount || 99);
   let idSeq = 0;
+  function mapEvidences(input: AiEvidence[]): EvidenceItem[] {
+    return (Array.isArray(input) ? input : [])
+      .filter(ev => ev && typeof ev.quote === 'string' && ev.quote.trim())
+      .map(ev => ({
+        id: `EV-AI-${Date.now().toString(36)}-${++idSeq}`,
+        page: ev.page,
+        quote: ev.quote.trim(),
+        ...(ev.lineIds === undefined ? {} : {
+          lineIds: Array.isArray(ev.lineIds) && ev.lineIds.every(id => typeof id === 'string') ? ev.lineIds : [],
+        }),
+      }));
+  }
 
   for (const item of payload.fieldRecords || []) {
     const def = schemaByCode.get((item.fieldCode || '').trim());
@@ -336,16 +353,7 @@ export function mapAiExtractionToCaseDraft(
           supp,
         );
 
-    const evidences = (Array.isArray(item.evidences) ? item.evidences : [])
-      .filter((ev) => ev && typeof ev.quote === 'string' && ev.quote.trim().length > 0)
-      .map((ev) => {
-        idSeq += 1;
-        return {
-          id: `EV-AI-${Date.now().toString(36)}-${idSeq}`,
-          page: Math.max(1, Math.min(maxPage, Math.round(Number(ev.page) || 1))),
-          quote: ev.quote.trim(),
-        };
-      });
+    const evidences = mapEvidences(item.evidences);
 
     // Skip empty non-informative extractions when presence is not_mentioned and nothing existed
     const existingIdx = nextFieldRecords.findIndex(
@@ -427,27 +435,21 @@ export function mapAiExtractionToCaseDraft(
 
     const rawEvId = (rawLeg.eventId || '').trim();
     const resolvedEventId = rawEvId ? entityIdMap.get(rawEvId) || rawEvId : '';
-    const eventId =
-      resolvedEventId && entityById.get(resolvedEventId)?.kind === 'E'
-        ? resolvedEventId
-        : '';
+    const isLiability = rawLeg.category === 'liability';
+    // Keep an unknown liability event visible for review instead of turning it into a whole-accident claim.
+    const eventId = isLiability || entityById.get(resolvedEventId)?.kind === 'E' ? resolvedEventId : '';
 
     const presenceStatus = normalizeAiPresenceStatus(rawLeg.presenceStatus);
     const rawText = (rawLeg.rawText || '').trim();
     const conclusionLabel = (rawLeg.conclusionLabel || '').trim();
     if (!rawText && !conclusionLabel) continue;
 
-    const hasSubjectLiability =
-      rawLeg.category === 'liability' &&
-      nextLegal.some((l) => l.subjectId === subjectId && l.category === 'liability');
-
-    const alreadyCovered = nextLegal.some(
-      (l) =>
-        l.subjectId === subjectId &&
-        l.category === rawLeg.category &&
-        (l.conclusionLabel === conclusionLabel || l.rawText === rawText || mergeMode === 'merge_missing'),
-    );
-    if (alreadyCovered || hasSubjectLiability) continue;
+    const alreadyCovered = nextLegal.some((l) => {
+      if (l.subjectId !== subjectId || l.category !== rawLeg.category) return false;
+      if (isLiability) return hasLiabilityScopeConflict(l, { subjectId, eventId });
+      return l.conclusionLabel === conclusionLabel || l.rawText === rawText || mergeMode === 'merge_missing';
+    });
+    if (alreadyCovered) continue;
 
     idSeq += 1;
     const prefix =
@@ -456,17 +458,9 @@ export function mapAiExtractionToCaseDraft(
         : rawLeg.category === 'cause'
           ? 'CAU-AI'
           : 'LIA-AI';
-    const evidences = (Array.isArray(rawLeg.evidences) ? rawLeg.evidences : [])
-      .filter((ev) => ev && typeof ev.quote === 'string' && ev.quote.trim().length > 0)
-      .map((ev) => {
-        idSeq += 1;
-        return {
-          id: `EV-AI-${Date.now().toString(36)}-${idSeq}`,
-          page: Math.max(1, Math.min(maxPage, Math.round(Number(ev.page) || 1))),
-          quote: ev.quote.trim(),
-        };
-      });
+    const evidences = mapEvidences(rawLeg.evidences);
 
+    while (nextLegal.some(item => item.id === `${prefix}-${idSeq}`)) idSeq += 1;
     const draftLegalItem: LegalConclusionItem = {
       id: `${prefix}-${idSeq}`,
       category: rawLeg.category,

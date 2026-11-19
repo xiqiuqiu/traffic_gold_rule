@@ -114,6 +114,14 @@ test('原件去重、待命、领取与故障恢复共用 PostgreSQL 的任务�
   assert.equal(await queue.savePdfArtifact(recovered, 'text', migrated), true);
   assert.equal(await queue.savePdfArtifact(recovered, 'text', { extractionVersion: 'unexpected' }), true);
   assert.deepEqual(await queue.readPdfArtifact(recovered, 'text'), migrated);
+  const lineSet = await queue.getPdfSourceLines(staged.taskId);
+  assert.equal(lineSet?.extractionVersion, extractionVersion);
+  assert.equal(lineSet?.fileSha256, staged.fileSha256);
+  assert.deepEqual(lineSet.lines.map(l => [l.page, l.lineNumber, l.text, l.bbox]),
+    page.lines.map((l, i) => [2, i + 1, l.text, l.bbox]));
+  assert.deepEqual(lineSet.lines, await queue.readRunEvidenceLines(recovered, extractionVersion));
+  assert.deepEqual(await queue.readRunEvidenceLines(recovered, 'wrong-version'), []);
+  assert.equal(await queue.getPdfSourceLines(v2.task.taskId), null);
   assert.equal(await queue.renewPdfLease(first), false);
   assert.equal(await queue.savePdfArtifact(first, 'draft', {}), false);
   assert.equal(await queue.failPdfTask(first, '旧 worker', false), false);
@@ -124,6 +132,21 @@ test('原件去重、待命、领取与故障恢复共用 PostgreSQL 的任务�
   assert.equal(await queue.updatePdfProgress(recovered, 'ai_extracting', '模型读取中', 60, 'test'), true);
   assert.equal(await queue.completePdfTask(recovered, draft), true);
   assert.deepEqual(await queue.getPdfDraft(staged.taskId), JSON.parse(JSON.stringify(draft)));
+  await t.test('已有草稿按本次解析的行补定位，保留人工确认和历史快照', async () => {
+    const item = { ...draft.legalConclusions.find(l => l.category === 'liability')!,
+      subjectId: 'P01', eventId: '', conclusionLabel: '无责任', rawText: '王小明无责任',
+      reviewStatus: 'checked', evidences: [{ id: 'EV-1', page: 2, quote: '王小明无责任' }] };
+    const legacy = { ...draft, fileSha256: staged.fileSha256, entities: [{ id:'P01', kind:'P', label:'王小明' }],
+      legalConclusions: [item] };
+    await queue.pool.query('UPDATE pdf_tasks SET draft=$2 WHERE id=$1', [staged.taskId, legacy]);
+    const served = (await queue.getPdfDraft(staged.taskId))!.legalConclusions[0];
+    assert.equal(served.reviewStatus, 'checked');
+    assert.equal(served.sourceLocation?.status, 'verified');
+    if (served.sourceLocation?.status === 'verified')
+      assert.deepEqual(served.sourceLocation.lines.map(l => l.lineNumber), [1, 2]);
+    const stored = await queue.pool.query('SELECT draft FROM pdf_tasks WHERE id=$1', [staged.taskId]);
+    assert.deepEqual(stored.rows[0].draft, JSON.parse(JSON.stringify(legacy)));
+  });
   assert.equal((await queue.startPdfTask(staged.taskId))?.status, 'pending_review');
 
   await queue.startPdfTask(v2.task.taskId);

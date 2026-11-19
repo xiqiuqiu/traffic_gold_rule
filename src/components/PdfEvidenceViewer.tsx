@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
 import { TextLayer } from 'pdfjs-dist';
+import type { LiabilitySourceLine } from '../types/gold';
 import {
   ChevronLeft,
   ChevronRight,
@@ -79,6 +80,10 @@ interface HighlightedEvidenceInput {
 
 interface PdfEvidenceViewerProps {
   pdfUrl: string;
+  locatedSource: { page: number; quote: string; lines: LiabilitySourceLine[] } | null;
+  locateRequest: object | null;
+  sourceMessage?: string;
+  onDocumentReady: (pdf: pdfjsLib.PDFDocumentProxy | null) => void;
   sourceFilename: string;
   currentPage: number;
   onPageChange: (page: number) => void;
@@ -122,6 +127,10 @@ function applyTextLayerHighlights(container: HTMLElement | null, quotes: string[
 
 export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
   pdfUrl,
+  locatedSource,
+  locateRequest,
+  sourceMessage,
+  onDocumentReady,
   sourceFilename,
   currentPage,
   onPageChange,
@@ -143,9 +152,30 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
   const [manualQuoteDraft, setManualQuoteDraft] = useState<string>('');
   const [textLayerReadyTick, setTextLayerReadyTick] = useState<number>(0);
 
+  const [drawnPage, setDrawnPage] = useState<{ page: number; scale: number } | null>(null);
+  const firstLineRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const textLayerRef = useRef<HTMLDivElement | null>(null);
   const viewerRegionRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (locateRequest) setViewMode('canvas');
+  }, [locateRequest]);
+
+  const showSource = viewMode === 'canvas' && locatedSource?.page === currentPage &&
+    drawnPage?.page === currentPage && drawnPage.scale === scale;
+  useEffect(() => {
+    const region = viewerRegionRef.current;
+    const line = firstLineRef.current;
+    if (!showSource || !line || !region) return;
+    // Scroll only the original document, preserving the position of the form on the right.
+    const bounds = line.getBoundingClientRect();
+    const viewport = region.getBoundingClientRect();
+    region.scrollTo({
+      top: region.scrollTop + bounds.top - viewport.top - region.clientHeight / 3,
+      left: region.scrollLeft + bounds.left - viewport.left - 16,
+    });
+  }, [locateRequest, showSource]);
 
   // Load PDF document whenever pdfUrl changes
   useEffect(() => {
@@ -177,6 +207,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
         const doc = await loadingTask.promise;
         if (cancelled) return;
         setPdfDoc(doc);
+        onDocumentReady(doc);
         setNumPages(doc.numPages);
         setLoading(false);
         onPageCountDetected?.(doc.numPages);
@@ -220,12 +251,14 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
     return () => {
       cancelled = true;
       abortController.abort();
+      onDocumentReady(null);
       loadingTask?.destroy().catch(() => {});
     };
   }, [pdfUrl]);
 
   // Render active page canvas + selectable text layer
   useEffect(() => {
+    setDrawnPage(null);
     if (!pdfDoc || viewMode !== 'canvas') return;
     let cancelled = false;
     let renderTask: pdfjsLib.RenderTask | null = null;
@@ -262,6 +295,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
       try {
         await renderTask.promise;
         if (cancelled) return;
+        setDrawnPage({ page: currentPage, scale });
         textLayerInstance = new TextLayer({
           textContentSource: page.streamTextContent(),
           container: textLayerDiv,
@@ -405,6 +439,14 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
         </div>
       </div>
 
+      {sourceMessage && <p role="status" className="border-b border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">{sourceMessage}</p>}
+      {showSource && locatedSource && (
+        <div role="status" className="border-b border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-950">
+          <span className="font-medium">引用原文 · 第 {locatedSource.page} 页</span>
+          <blockquote className="mt-1 max-h-16 overflow-auto">{locatedSource.quote}</blockquote>
+        </div>
+      )}
+
       {/* Active Evidence Chain Highlight Strip */}
       {highlightedEvidences.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 bg-amber-50/80 px-3 py-1.5 text-xs text-amber-950">
@@ -460,6 +502,21 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
           <div className="pdf-page-container border border-slate-200">
             <canvas ref={canvasRef} />
             <div ref={textLayerRef} className="pdf-text-layer" />
+            {showSource && locatedSource && (
+              <div role="img" aria-label={`第 ${currentPage} 页引用原文，已核验 ${locatedSource.lines.length} 行`}
+                className="pointer-events-none absolute inset-0 z-[3]">
+                {locatedSource.lines.map((line, index) => {
+                  const [left, top, right, bottom] = line.bbox;
+                  return (
+                    <div key={line.lineId} ref={index === 0 ? firstLineRef : undefined}
+                      data-source-line={line.lineId}
+                      className="absolute rounded-[1px] border border-blue-600 bg-blue-400/25"
+                      style={{ left: `${left * 100}%`, top: `${top * 100}%`, width: `${(right - left) * 100}%`, height: `${(bottom - top) * 100}%` }}
+                    />
+                  );
+                })}
+              </div>
+            )}
             <DemoWatermarkOverlay />
           </div>
         )}

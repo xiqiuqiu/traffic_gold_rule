@@ -9,12 +9,13 @@ import { getActiveModelSummary } from './src/utils/aiSettings';
 import { createPlaceholderCaseForTask } from './src/utils/taskCase';
 import { mapExtendedRoleToWorkbenchRole } from './src/utils/systemEngine';
 import {
-  claimPdfTask, completePdfTask, failPdfTask, initPdfQueue, pool, readPdfArtifact,
+  claimPdfTask, completePdfTask, failPdfTask, initPdfQueue, pool, readPdfArtifact, readRunEvidenceLines,
   renewPdfLease, savePdfArtifact, updatePdfProgress, type PdfLease,
 } from './src/server/pdfQueue';
 import { loadWorkerModelSettings, ModelRequestError, preanalyzePdf } from './src/server/modelService';
 import { PermanentPdfError } from './src/server/readPdf';
 import { loadRunPages } from './src/server/extractPages';
+import { resolveLiabilitySource, type LiabilityLineSet } from './src/server/liabilityEvidence';
 
 const state = Annotation.Root({ stage: Annotation<'queued' | 'text' | 'draft'>() });
 const saver = new PostgresSaver(pool, undefined, { schema: 'pdf_graph' });
@@ -22,6 +23,15 @@ const saver = new PostgresSaver(pool, undefined, { schema: 'pdf_graph' });
 class LeaseLost extends Error {}
 function requireLease(current: boolean) {
   if (!current) throw new LeaseLost('任务已由其他 worker 接手。');
+}
+
+function linkLiabilitySources(draft: CaseDocument, lineSet: LiabilityLineSet): CaseDocument {
+  return {
+    ...draft,
+    legalConclusions: draft.legalConclusions.map(item => item.category === 'liability'
+      ? { ...item, sourceLocation: resolveLiabilitySource(item, draft.entities, lineSet) }
+      : item),
+  };
 }
 
 async function processLease(lease: PdfLease) {
@@ -44,6 +54,7 @@ async function processLease(lease: PdfLease) {
         if (await readPdfArtifact<CaseDocument>(lease, 'draft')) return { stage: 'draft' as const };
         // An in-flight first-stage run may resume directly at analyze with only the old text cache.
         const pages = await loadRunPages(lease, controller.signal);
+        const lines = await readRunEvidenceLines(lease, pages.extractionVersion);
         const settings = await loadWorkerModelSettings(lease.modelConfigVersion);
         const summary = getActiveModelSummary(settings);
         if (!summary.isConfigured || (settings.provider === 'gemini' && (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'MY_GEMINI_API_KEY'))) {
@@ -54,15 +65,15 @@ async function processLease(lease: PdfLease) {
         const supplements = INITIAL_VOCABULARY_SUPPLEMENTS;
         const payload = await preanalyzePdf({
           caseId: task.caseId, sourceFilename: task.filename, pageCount: pages.pageCount,
-          pageTexts: pages.pageTexts,
           schemaCatalog: buildAiSchemaCatalogPayload(supplements),
-        }, settings, 'page_evidence');
+        }, settings, lines);
         const { nextCase } = mapAiExtractionToCaseDraft(
           createPlaceholderCaseForTask({ ...task, pageCount: pages.pageCount }),
           payload,
           { supplements, actorLabel: modelLabel, actorRole: mapExtendedRoleToWorkbenchRole(task.createdByRole) },
         );
-        requireLease(await savePdfArtifact(lease, 'draft', nextCase));
+        const draft = linkLiabilitySources(nextCase, { fileSha256: task.fileSha256, extractionVersion: pages.extractionVersion, lines });
+        requireLease(await savePdfArtifact(lease, 'draft', draft));
         return { stage: 'draft' as const };
       })
       .addEdge(START, 'extract').addEdge('extract', 'analyze').addEdge('analyze', END)
@@ -73,8 +84,14 @@ async function processLease(lease: PdfLease) {
     if (!checkpoint.createdAt || checkpoint.next.length) {
       await graph.invoke(checkpoint.createdAt ? null : { stage: 'queued' }, config);
     }
-    const draft = await readPdfArtifact<CaseDocument>(lease, 'draft');
+    let draft = await readPdfArtifact<CaseDocument>(lease, 'draft');
     if (!draft) throw new Error('任务缺少可交付的案件草稿。');
+    // A completed graph checkpoint can carry a draft from before liability locations were recorded.
+    if (draft.legalConclusions.some(item => item.category === 'liability' && !item.sourceLocation)) {
+      const { extractionVersion } = await loadRunPages(lease, controller.signal);
+      const lines = await readRunEvidenceLines(lease, extractionVersion);
+      draft = linkLiabilitySources(draft, { fileSha256: task.fileSha256, extractionVersion, lines });
+    }
     requireLease(await completePdfTask(lease, draft));
   } catch (error) {
     if (controller.signal.aborted || error instanceof LeaseLost) return;

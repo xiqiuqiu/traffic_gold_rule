@@ -44,6 +44,8 @@ import {
   validateLegalConclusion,
   validateRelation,
 } from '../utils/goldRules';
+import { EvidencePageLink, LiabilitySourceNote, type LocateEvidence } from './EvidencePageLink';
+import { nextLiabilityScope } from '../utils/nextLiabilityScope';
 import { ControlledVocabCombobox } from './ControlledVocabCombobox';
 import { ReviewLifecycleBar, getCardStatusBorderClass } from './ReviewLifecycleBar';
 import { ViolationLinkConsistencyBox } from './ViolationLinkConsistencyBox';
@@ -58,7 +60,7 @@ interface FieldAnnotationPanelProps {
   onFocusRecord: (entityId: string, fieldCode: string) => void;
   onFocusLegalOrRel: (id: string, label: string, reveal?: boolean) => void;
   selectedPdfQuote: { page: number; quote: string } | null;
-  onJumpToPage: (page: number) => void;
+  onLocateEvidence: LocateEvidence;
   onUpsertFieldRecord: (record: FieldRecord, auditNote?: string) => void;
   onDeleteFieldRecord: (recordId: string) => void;
   onSaveLegalItem: (item: LegalConclusionItem, auditNote?: string) => void;
@@ -89,7 +91,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
   onFocusRecord,
   onFocusLegalOrRel,
   selectedPdfQuote,
-  onJumpToPage,
+  onLocateEvidence,
   onUpsertFieldRecord,
   onDeleteFieldRecord,
   onSaveLegalItem,
@@ -696,15 +698,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               className="font-mono-tabular w-14 rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-900"
                             />
                             <span className="text-xs text-slate-500">页</span>
-                            <button
-                              type="button"
-                              title={`跳转到第 ${ev.page} 页`}
-                              aria-label={`定位到第 ${ev.page} 页`}
-                              onClick={() => onJumpToPage(ev.page)}
-                              className="shrink-0 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
-                            >
-                              定位
-                            </button>
+                            <EvidencePageLink record={record} evidence={ev} onLocate={onLocateEvidence} editablePage />
                             <input
                               type="text"
                               aria-label={`第 ${idx + 1} 条证据原文`}
@@ -879,9 +873,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
             </div>
             <div className="flex flex-wrap items-center gap-3">
               {(() => {
-                const existingSubjectLiability =
-                  getSubjectLiabilityRecords(caseDoc.legalConclusions, selectedEntity.id)[0] ||
-                  null;
+                const events = caseDoc.entities.filter(e => e.kind === 'E');
+                const availableScope = nextLiabilityScope([selectedEntity.id], events.map(e => e.id), caseDoc.legalConclusions);
+                const existingSubjectLiability = availableScope ? null
+                  : getSubjectLiabilityRecords(caseDoc.legalConclusions, selectedEntity.id)[0];
                 return (
                   [
                     ['violation', '违法行为', 'D10.F058'],
@@ -889,14 +884,14 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                     ['liability', '责任划分', 'D10.F060'],
                   ] as Array<[LegalCategory, string, string]>
                 ).map(([cat, label]) => {
-                  const isExistingLiability = cat === 'liability' && existingSubjectLiability !== null;
+                  const isExistingLiability = cat === 'liability' && Boolean(existingSubjectLiability);
                   return (
                     <button
                       key={cat}
                       type="button"
                       title={
                         isExistingLiability
-                          ? `每个责任主体仅允许一条责任划分，点击定位 ${existingSubjectLiability.id}`
+                          ? `该主体的各阶段均已有责任划分，点击定位 ${existingSubjectLiability?.id}`
                           : undefined
                       }
                       onClick={() => {
@@ -907,12 +902,11 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           );
                           return;
                         }
-                        const events = caseDoc.entities.filter((e) => e.kind === 'E');
                         const newItem: LegalConclusionItem = {
                           id: `${cat === 'violation' ? 'VIO' : cat === 'cause' ? 'CAU' : 'LIA'}-${Date.now().toString(36)}`,
                           category: cat,
                           subjectId: selectedEntity.id,
-                          eventId: events[0]?.id || '',
+                          eventId: cat === 'liability' ? availableScope!.eventId : events[0]?.id || '',
                           presenceStatus: 'present',
                           rawText: '',
                           lawArticle: '',
@@ -1577,19 +1571,13 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
 
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <div className="flex flex-wrap items-center gap-1.5">
+                          <LiabilitySourceNote item={item} caseDoc={caseDoc} onLocate={onLocateEvidence} />
                           {item.evidences.map((ev) => (
                             <span
                               key={ev.id}
                               className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-slate-700"
                             >
-                              <button
-                                type="button"
-                                onClick={() => onJumpToPage(ev.page)}
-                                className="font-mono-tabular font-medium text-blue-800"
-                              >
-                                p.{ev.page}
-                              </button>
-                              <span className="max-w-[220px] truncate">{ev.quote}</span>
+                              <EvidencePageLink record={item} evidence={ev} onLocate={onLocateEvidence} showQuote />
                               <button
                                 type="button"
                                 aria-label="删除证据"
@@ -1981,6 +1969,14 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           />
                         </div>
 
+                        {rel.evidences.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
+                            {rel.evidences.map(ev => (
+                              <EvidencePageLink key={ev.id} record={rel} evidence={ev} onLocate={onLocateEvidence} showQuote />
+                            ))}
+                          </div>
+                        )}
+
                         {userRole !== 'annotator' && (
                           <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-200/70 pt-2">
                             <input
@@ -2081,7 +2077,13 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               {l.subjectId}
                             </span>{' '}
                             <span aria-hidden="true">·</span> {l.conclusionLabel || fallbackCat}{' '}
-                            <span aria-hidden="true">·</span> {l.rawText || '暂无原文结论'}
+                            <span aria-hidden="true">·</span> {l.rawText || '暂无原文结论'}{' '}
+                            <span className="inline-flex flex-wrap gap-x-2">
+                              <LiabilitySourceNote item={l} caseDoc={caseDoc} onLocate={onLocateEvidence} />
+                              {l.evidences.map(ev => (
+                                <EvidencePageLink key={ev.id} record={l} evidence={ev} onLocate={onLocateEvidence} showQuote={l.evidences.length > 1} />
+                              ))}
+                            </span>
                           </li>
                         );
                       })}

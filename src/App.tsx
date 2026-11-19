@@ -38,6 +38,8 @@ import {
   CaseWorkItem,
   EntityKind,
   EventRelationItem,
+  EvidenceItem,
+  LiabilitySourceLocation,
   FieldFilterBucket,
   FieldRecord,
   LegalConclusionItem,
@@ -57,6 +59,7 @@ import {
   computeCaseReadiness,
   computeEntityProgressMap,
   generateNextEntityId,
+  hasLiabilityScopeConflict,
   validateFieldRecord,
 } from './utils/goldRules';
 import {
@@ -73,6 +76,8 @@ import {
   AI_SETTINGS_STORAGE_KEY,
   DEFAULT_AI_PROVIDER_SETTINGS,
 } from './utils/aiSettings';
+import { useEvidenceLocator } from './utils/useEvidenceLocator';
+import { getVerifiedLiabilitySource, liabilitySourceKey } from './utils/liabilitySourceKey';
 import { createPlaceholderCaseForTask } from './utils/taskCase';
 import {
   DEFAULT_IDENTITIES,
@@ -118,6 +123,15 @@ function loadInitialSupplements(): VocabularySupplementItem[] {
     // Fall back to initial CSV supplements
   }
   return INITIAL_VOCABULARY_SUPPLEMENTS;
+}
+
+function clearChangedLineIds<T extends { evidences: EvidenceItem[] }>(record: T, previous?: T): T {
+  if (!previous || previous.evidences === record.evidences) return record;
+  return { ...record, evidences: record.evidences.map(ev => {
+    if (!ev.lineIds) return ev;
+    const old = previous.evidences.find(e => e.id === ev.id);
+    return old && (ev.page !== old.page || ev.quote !== old.quote) ? { ...ev, lineIds: undefined } : ev;
+  }) };
 }
 
 async function readApiResult(response: Response) {
@@ -556,6 +570,32 @@ export default function App() {
     }
   }, [activeTab]);
 
+  const saveLiabilityLocation = useCallback((caseId: string, item: LegalConclusionItem, sourceLocation: LiabilitySourceLocation) => {
+    setCases(prev => prev.map(doc => {
+      if (doc.caseId !== caseId || !doc.legalConclusions.includes(item)) return doc;
+      const next = { ...doc, legalConclusions: doc.legalConclusions.map(l => l === item ? { ...l, sourceLocation } : l) };
+      if (machineDrafts.current.has(doc)) machineDrafts.current.add(next);
+      return next;
+    }));
+  }, []);
+  const locator = useEvidenceLocator(activeCase, detailTaskId,
+    JSON.stringify([systemView, activeCaseId, activeTab, selectedEntityId]),
+    focusedLegalOrRelId?.id ?? focusedFieldKey, setCurrentPdfPage, saveLiabilityLocation);
+  const locateEvidence = (record: FieldRecord | LegalConclusionItem | EventRelationItem, evidence: EvidenceItem) => {
+    if ('recordId' in record) {
+      setFocusedLegalOrRelId(null);
+      setFocusedFieldKey(`${record.entityId}:${record.fieldCode}`);
+    } else {
+      setFocusedFieldKey(null);
+      setFocusedLegalOrRelId({ id: record.id, label: `${record.id} · ${'conclusionLabel' in record ? record.conclusionLabel : record.action}` });
+    }
+    locator.locate(record, evidence);
+  };
+  const jumpToPdfPage = (page: number) => {
+    locator.clear();
+    setCurrentPdfPage(page);
+  };
+
   const selectedEntity = useMemo(
     () =>
       activeCase.entities.find((e) => e.id === selectedEntityId) ||
@@ -657,6 +697,7 @@ export default function App() {
 
   const handleUpsertFieldRecord = (record: FieldRecord, auditNote?: string) => {
     const prevRecord = activeCase.fieldRecords.find((r) => r.recordId === record.recordId);
+    record = clearChangedLineIds(record, prevRecord);
     const statusChanged = prevRecord && prevRecord.reviewStatus !== record.reviewStatus;
     if (statusChanged) {
       if (record.reviewStatus === 'specialist_review' && !canAdjudicate) {
@@ -722,6 +763,10 @@ export default function App() {
 
   const handleSaveLegalItem = (item: LegalConclusionItem, auditNote?: string) => {
     const prevItem = activeCase.legalConclusions.find((x) => x.id === item.id);
+    item = clearChangedLineIds(item, prevItem);
+    if (prevItem?.sourceLocation && liabilitySourceKey(prevItem, activeCase.entities) !== liabilitySourceKey(item, activeCase.entities)) {
+      item = { ...item, sourceLocation: { status: 'needs_review', reason: '记录已修改，需重新核对原文。' } };
+    }
     const statusChanged = prevItem && prevItem.reviewStatus !== item.reviewStatus;
     if (statusChanged) {
       if (item.reviewStatus === 'specialist_review' && !canAdjudicate) {
@@ -737,6 +782,11 @@ export default function App() {
       return;
     }
 
+    if (item.category === 'liability' && (!prevItem || !hasLiabilityScopeConflict(prevItem, item)) &&
+        activeCase.legalConclusions.some(other => other.id !== item.id && other.category === 'liability' && hasLiabilityScopeConflict(other, item))) {
+      notifyPermissionBlocked('该主体在此事故阶段已有责任记录，请修改已有记录或选择其他阶段。');
+      return;
+    }
     updateActiveCase((prev) => {
       const exists = prev.legalConclusions.some((x) => x.id === item.id);
       const next = exists
@@ -775,6 +825,7 @@ export default function App() {
 
   const handleSaveRelationItem = (item: EventRelationItem, auditNote?: string) => {
     const prevItem = activeCase.relations.find((x) => x.id === item.id);
+    item = clearChangedLineIds(item, prevItem);
     const statusChanged = prevItem && prevItem.reviewStatus !== item.reviewStatus;
     if (statusChanged) {
       if (item.reviewStatus === 'specialist_review' && !canAdjudicate) {
@@ -839,11 +890,11 @@ export default function App() {
         if (errors.length > 0) return r;
         return { ...r, reviewStatus: 'checked' as const };
       });
-      const nextLegal = prev.legalConclusions.map((l) =>
-        l.reviewStatus === 'draft' && l.rawText.trim() && l.evidences.length > 0
-          ? { ...l, reviewStatus: 'checked' as const }
-          : l,
-      );
+      const nextLegal = prev.legalConclusions.map(item => {
+        if (item.reviewStatus !== 'draft' || !item.rawText.trim() || !item.evidences.length) return item;
+        if (item.category === 'liability' && item.sourceLocation && !getVerifiedLiabilitySource(item, prev)) return item;
+        return { ...item, reviewStatus: 'checked' as const };
+      });
       const nextRels = prev.relations.map((rel) =>
         rel.reviewStatus === 'draft' && rel.evidences.length > 0
           ? { ...rel, reviewStatus: 'checked' as const }
@@ -1762,17 +1813,22 @@ export default function App() {
           {/* Left Pane: Real PDF Renderer & Evidence Selector */}
           <div className="min-h-[380px] lg:col-span-5 lg:h-full lg:min-h-0">
             <PdfEvidenceViewer
+              key={activeCase.pdfUrl}
               pdfUrl={activeCase.pdfUrl}
               sourceFilename={activeCase.sourceFilename}
               currentPage={currentPdfPage}
-              onPageChange={setCurrentPdfPage}
+              onPageChange={jumpToPdfPage}
+              locatedSource={locator.location}
+              locateRequest={locator.active}
+              sourceMessage={locator.message}
+              onDocumentReady={locator.setPdf}
               onPageCountDetected={(count) => {
                 if (!waitingForDraft && count > 0 && count !== activeCase.pageCount) {
                   updateActiveCase((prev) => ({ ...prev, pageCount: count }));
                 }
               }}
               onPageTextsExtracted={setPdfPageTexts}
-              highlightedEvidences={activeTab === 'legal' ? highlightedEvidences : []}
+              highlightedEvidences={activeTab === 'legal' && !locator.active ? highlightedEvidences : []}
               selectedQuote={selectedPdfQuote}
               onSelectQuote={setSelectedPdfQuote}
               activeTargetLabel={activeTargetInfo?.label || null}
@@ -2002,7 +2058,7 @@ export default function App() {
                     if (reveal) setRecordScrollRequest({ tab: 'fields', id });
                   }}
                   selectedPdfQuote={selectedPdfQuote}
-                  onJumpToPage={(page) => setCurrentPdfPage(page)}
+                  onLocateEvidence={locateEvidence}
                   onUpsertFieldRecord={handleUpsertFieldRecord}
                   onDeleteFieldRecord={handleDeleteFieldRecord}
                   onSaveLegalItem={handleSaveLegalItem}
@@ -2027,7 +2083,8 @@ export default function App() {
                   setFocusedLegalOrRelId({ id, label });
                   if (reveal) setRecordScrollRequest({ tab: 'legal', id });
                 }}
-                onJumpToPage={(page) => setCurrentPdfPage(page)}
+                onJumpToPage={jumpToPdfPage}
+                onLocateEvidence={locateEvidence}
                 onHighlightEvidences={setHighlightedEvidences}
                 onJumpToEntityField={(entityId, fieldCode) => {
                   setActiveTab('fields');

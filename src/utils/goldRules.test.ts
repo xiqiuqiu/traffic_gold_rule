@@ -36,6 +36,7 @@ import {
 } from './goldRules';
 import { CaseDocument, FieldRecord, LegalConclusionItem } from '../types/gold';
 import { INITIAL_VOCABULARY_SUPPLEMENTS, MASTER_FIELD_SCHEMA } from '../data/schemaCatalog';
+import { liabilitySourceKey } from './liabilitySourceKey';
 import { SEED_CASES } from '../data/seedCases';
 
 test('generateNextEntityId follows ACC and two-digit prefix conventions', () => {
@@ -167,6 +168,25 @@ test('computeCaseReadiness blocks scoring until checked/adjudicated and all 10 c
 
   const payload = buildGoldExportPayload(baseCase, true);
   assert.equal(payload.meta.eligible_for_scoring, true);
+});
+
+test('两种导出沿用已核验的责任行，人工更改结论后不导出旧框', () => {
+  const doc = structuredClone(SEED_CASES[0]);
+  const item = doc.legalConclusions.find(l => l.category === 'liability')!;
+  item.sourceLocation = {
+    status: 'verified', fileSha256: doc.fileSha256, extractionVersion: 'v1',
+    recordKey: liabilitySourceKey(item, doc.entities), page: 1, quote: '13800001111',
+    lines: [{ lineId: '1:9', lineNumber: 9, page: 1, text: '13800001111', bbox: [0, 0, 1, 1] }],
+  };
+  const read = () => [buildGoldExportPayload(doc, true).legal_conclusions.liabilities[0],
+    buildGoldV02ExportPayload(doc, true).responsibilities[0]];
+  for (const exported of read()) {
+    const source = exported.source_location;
+    assert.match(JSON.stringify(source), /"line_id":"1:9"/);
+    assert.doesNotMatch(JSON.stringify(source), /13800001111/);
+  }
+  item.rawText += '修订';
+  assert.ok(read().every(record => !('source_location' in record)));
 });
 
 test('G01-G06 fact fields have single-entity ownership except D05.F075 (P or V), and G07/G08 are isolated', () => {
@@ -956,6 +976,10 @@ test('single liability per subject helpers pick un-liabled subjects and flag dup
     { ...lia1, id: 'LIA-03', subjectId: 'P03' },
   ];
   assert.equal(pickDefaultLiabilitySubjectId(subjects, allThree), null);
+
+  const staged = { ...lia1, id: 'LIA-STAGE', eventId: 'EVT-02' };
+  assert.ok(!validateLegalConclusion(staged, { allLegalConclusions: [lia1, staged] })
+    .some(i => i.code === 'DUPLICATE_SUBJECT_LIABILITY'));
 
   // Duplicate P01 liability triggers DUPLICATE_SUBJECT_LIABILITY error
   const dup = { ...lia1, id: 'LIA-DUP', subjectId: 'P01' };

@@ -53,14 +53,17 @@ test('worker restarts from the text checkpoint and retries a transient model fai
     let text = '';
     for await (const chunk of request) text += chunk;
     lastPrompt = JSON.parse(text).messages.at(-1).content;
-    receivedCase ||= lastPrompt.includes('王小明无责任');
+    const splitName = lastPrompt.match(/^\[(\d+:\d+)\] [^\n]*当事人王小\s*\n\[(\d+:\d+)\] 明无责任。/m);
+    receivedCase ||= Boolean(splitName);
     calls++;
     if (calls === 1) return; // Simulate a worker crash during a model request.
     if (calls === 2) { response.writeHead(429).end(); return; }
     const payload = {
       entities: [{ id: 'P01', kind: 'P', label: '王小明' }], fieldRecords: [],
       legalConclusions: [{ category: 'liability', subjectId: 'P01', presenceStatus: 'present',
-        rawText: '王小明无责任', conclusionLabel: '无责任', evidences: [{ page: 2, quote: '王小明无责任' }] }],
+        rawText: '王小明无责任', conclusionLabel: '无责任', evidences: [{
+          page: 2, quote: '王小明无责任', lineIds: splitName?.slice(1),
+        }] }],
     };
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) } }] }));
@@ -120,6 +123,9 @@ test('worker restarts from the text checkpoint and retries a transient model fai
     assert.equal(await artifactCount(), 1);
     assert.equal(result.draft.legalConclusions[0].evidences[0].page, 2);
     assert.equal(result.draft.legalConclusions[0].evidences[0].quote, '王小明无责任');
+    const location = result.draft.legalConclusions[0].sourceLocation;
+    assert.equal(location.status, 'verified');
+    assert.deepEqual(location.lines.map((row: { lineId: string }) => row.lineId), result.draft.legalConclusions[0].evidences[0].lineIds);
     assert.equal(result.draft.pdfUrl, task.pdfUrl);
 
     await t.test('中途 OCR 失败后按原始页恢复，短责任引文进入模型输入', async () => {
@@ -147,8 +153,11 @@ test('worker restarts from the text checkpoint and retries a transient model fai
       await until(async () => (await pool.query('SELECT status FROM pdf_tasks WHERE id=$1', [mixed.taskId])).rows[0].status === 'pending_review');
       assert.equal(ocrCalls, 3);
       assert.deepEqual((await inspect()).rows.map(r => r.source), ['native', 'ocr', 'ocr', 'blank']);
-      assert.match(lastPrompt, /第 2 页 ===\n甲全责/);
-      assert.match(lastPrompt, /第 3 页 ===\n乙无责/);
+      assert.match(lastPrompt, /第 2 页 ===\n\[\d+:1\] 甲全责/);
+      assert.match(lastPrompt, /第 3 页 ===\n\[\d+:1\] 乙无责/);
+      // The model returned the previous document's claim; the current document has no matching source.
+      const otherDraft = (await pool.query('SELECT draft FROM pdf_tasks WHERE id=$1', [mixed.taskId])).rows[0].draft;
+      assert.equal(otherDraft.legalConclusions[0].sourceLocation.status, 'needs_review');
     });
   } finally {
     await stopWorker();

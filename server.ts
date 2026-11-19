@@ -2,7 +2,7 @@ import 'dotenv/config';
 import fs from 'node:fs/promises';
 import express from 'express';
 import path from 'node:path';
-import { PdfInputError, initPdfQueue, listPdfTasks, startPdfTask, deletePdfTask, enqueuePdf, recentPdfAuditEvents, getOriginalPath, getPdfTask, getPdfDraft, MAX_PDF_BYTES } from './src/server/pdfQueue';
+import { PdfInputError, initPdfQueue, listPdfTasks, startPdfTask, deletePdfTask, enqueuePdf, recentPdfAuditEvents, getOriginalPath, getPdfTask, getPdfDraft, getPdfSourceLines, MAX_PDF_BYTES } from './src/server/pdfQueue';
 import { EXTENDED_ROLE_META } from './src/utils/systemEngine';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:http';
@@ -245,6 +245,14 @@ async function startServer() {
       if (!draft) { res.status(404).json({ error: '草稿尚不可用' }); return; }
       res.json({ draft });
     } catch { res.status(503).json({ error: '无法读取草稿' }); }
+  });
+
+  app.get('/api/system/tasks/:taskId/source-lines', async (req, res) => {
+    try {
+      const source = await getPdfSourceLines(req.params.taskId);
+      if (!source) { res.status(404).json({ error: '该次解析没有保存原文行。' }); return; }
+      res.json(source);
+    } catch { res.status(503).json({ error: '无法读取该次解析的原文行。' }); }
   });
 
   app.patch('/api/system/tasks/:taskId', async (req, res) => {

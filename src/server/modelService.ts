@@ -10,6 +10,7 @@ import {
 } from '../utils/aiResponseParser';
 import type { AiProviderSettings } from '../utils/aiSettings';
 import type { AiPreanalyzePayload, AiSchemaDescriptor } from '../utils/aiPreanalyze';
+import type { LiabilitySourceLine } from '../types/gold';
 export { loadWorkerModelSettings } from './modelSettings';
 
 interface PreanalyzeRequestBody {
@@ -49,8 +50,22 @@ function buildSystemInstruction(): string {
     '   - 若 presenceStatus 为 present 或 explicit_negative，必须保留原文 rawValue，并给出至少 1 条准确的页码 page（从 1 开始）与最短原文摘录 quote；',
     '   - normalizedValues 必须尽量对齐字段给定的受控词表 options（单选字段最多 1 个元素，多选字段可多个元素）；',
     '4. 如文书包含违法行为、事故形成原因及责任划分，可同步提取至 legalConclusions 数组（category 为 violation / cause / liability）。',
+    '5. 对原文明确认定的责任，逐一列出责任人和责任等级，包括明确无责的人。分阶段认定时按主体和阶段分别建项，eventId 对应 E 实体，实体名称保留原文阶段或碰撞次序。即使是多阶段事故，对覆盖全案、原文未限定到某阶段的认定（例如单独陈述某当事人无责任），eventId 必须留空。不得以当事人出现的位置或其参与过的碰撞推断责任阶段。',
   ].join('\n');
 }
+
+const evidenceSchema = {
+  type: Type.ARRAY,
+  items: {
+    type: Type.OBJECT,
+    properties: {
+      page: { type: Type.INTEGER },
+      quote: { type: Type.STRING },
+      lineIds: { type: Type.ARRAY, items: { type: Type.STRING }, description: '带行号文本中的原文行标识，按原文顺序排列。' },
+    },
+    required: ['page', 'quote'],
+  },
+};
 
 const PREANALYZE_RESPONSE_SCHEMA = {
   type: Type.OBJECT,
@@ -115,17 +130,7 @@ const PREANALYZE_RESPONSE_SCHEMA = {
             items: { type: Type.STRING },
             description: '对齐受控词表或标准化取值后的结果数组。',
           },
-          evidences: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                page: { type: Type.INTEGER },
-                quote: { type: Type.STRING },
-              },
-              required: ['page', 'quote'],
-            },
-          },
+          evidences: evidenceSchema,
         },
         required: ['entityId', 'fieldCode', 'presenceStatus', 'rawValue', 'normalizedValues', 'evidences'],
       },
@@ -159,17 +164,7 @@ const PREANALYZE_RESPONSE_SCHEMA = {
           conclusionLabel: {
             type: Type.STRING,
           },
-          evidences: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                page: { type: Type.INTEGER },
-                quote: { type: Type.STRING },
-              },
-              required: ['page', 'quote'],
-            },
-          },
+          evidences: evidenceSchema,
         },
         required: ['category', 'subjectId', 'presenceStatus', 'rawText', 'conclusionLabel', 'evidences'],
       },
@@ -190,8 +185,8 @@ function buildOpenAiJsonOutputInstruction(): string {
     '请严格只输出一个合法 JSON 对象（不要输出任何 Markdown 代码块围栏或额外说明），包含以下字段：',
     '- summary: string（一句话概括核心事实与实体概览）',
     '- entities: Array<{ id: string, kind: "ACC"|"P"|"V"|"E"|"R"|"I"|"O", label: string, subtitle?: string, roleLabel?: string }>',
-    '- fieldRecords: Array<{ entityId: string, fieldCode: string, presenceStatus: string, rawValue: string, normalizedValues: string[], evidences: Array<{ page: number, quote: string }> }>',
-    '- legalConclusions?: Array<{ category: "violation"|"cause"|"liability", subjectId: string, eventId?: string, presenceStatus: string, rawText: string, lawArticle?: string, conclusionLabel: string, evidences: Array<{ page: number, quote: string }> }>',
+    '- fieldRecords: Array<{ entityId: string, fieldCode: string, presenceStatus: string, rawValue: string, normalizedValues: string[], evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
+    '- legalConclusions?: Array<{ category: "violation"|"cause"|"liability", subjectId: string, eventId?: string, presenceStatus: string, rawText: string, lawArticle?: string, conclusionLabel: string, evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
   ].join('\n');
 }
 
@@ -485,9 +480,18 @@ function validatePayload(value: unknown): AiPreanalyzePayload {
   return parsed;
 }
 
-export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiProviderSettings, textSource: 'browser' | 'page_evidence' = 'browser'): Promise<AiPreanalyzePayload> {
+export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiProviderSettings, sourceLines?: LiabilitySourceLine[]): Promise<AiPreanalyzePayload> {
   const useOpenAi = settings.provider === 'openai_compatible';
-  const pageTexts = body.pageTexts || {};
+  let pageTexts = body.pageTexts || {};
+  if (sourceLines) {
+    const blocks = new Map<number, string[]>();
+    for (const line of sourceLines) {
+      const rows = blocks.get(line.page) ?? [];
+      rows.push(`[${line.lineId}] ${line.text}`);
+      blocks.set(line.page, rows);
+    }
+    pageTexts = Object.fromEntries(Array.from(blocks, ([page, rows]) => [page, rows.join('\n')]));
+  }
   const sortedPages = Object.keys(pageTexts)
     .map((k) => Number(k))
     .filter((n) => Number.isFinite(n) && n >= 1)
@@ -496,11 +500,11 @@ export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiPro
   const formattedPageBlocks = sortedPages
     .filter((p) => pageTexts[p]?.trim())
     .map((p) => `=== 第 ${p} 页 ===\n${pageTexts[p].trim()}`)
-    .filter(block => textSource === 'page_evidence' || block.length > 20)
+    .filter(block => sourceLines !== undefined || block.length > 20)
     .join('\n\n');
 
   // Page evidence has passed the worker's per-page check. A short sentence can carry the entire liability finding.
-  const hasTextContent = textSource === 'page_evidence'
+  const hasTextContent = sourceLines
     ? formattedPageBlocks.length > 0
     : formattedPageBlocks.replace(/\s+/g, '').length >= 30;
   const hasPdfBinary = typeof body.pdfBase64 === 'string' && body.pdfBase64.length > 20;
@@ -533,6 +537,10 @@ export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiPro
     '【目标字段定义与受控词表】',
     schemaSummary || '请按道路交通事故认定书标准字段体系（G01-G06）提取对象与字段记录。',
     '',
+    ...(sourceLines ? [
+      '【原文引用】每一行前方括号里的标识由系统提供。每条字段、违法行为、认定原因和责任划分的 evidences 均填原始页码、逐字摘录 quote 和恰好覆盖摘录的有序 lineIds（照抄括号内标识）。quote 不含行标识，姓名或句子跨行时连接原文并列出所有相邻行。分阶段的责任摘录需包含该阶段、主体与责任等级；多人共用一句认定时保留共同认定句。无法核实时保留待复核，不要编造页码或行号。',
+      '',
+    ] : ['当前材料未提供系统行标识，请仅填写页码与逐字摘录，省略 lineIds。']),
     hasTextContent
       ? `【PDF 分页提取文本】\n${formattedPageBlocks}`
       : '【说明】本 PDF 为扫描件或无内嵌文本层，请直接阅读随附 PDF 原件提取每页文本与页码证据。',

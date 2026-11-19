@@ -36,14 +36,15 @@ import {
   findTextMatchRanges,
   getScopedCauseCandidatesForLiability,
   getScopedViolationCandidatesForCause,
-  getSubjectLiabilityRecords,
   matchesWorkItemStatus,
-  pickDefaultLiabilitySubjectId,
+  hasLiabilityScopeConflict,
   sortLegalConclusionsByChain,
   traceLegalEvidenceChain,
   validateLegalConclusion,
   validateRelation,
 } from '../utils/goldRules';
+import { EvidencePageLink, LiabilitySourceNote, type LocateEvidence } from './EvidencePageLink';
+import { nextLiabilityScope } from '../utils/nextLiabilityScope';
 import { ControlledVocabCombobox } from './ControlledVocabCombobox';
 import { ReviewLifecycleBar, getCardStatusBorderClass } from './ReviewLifecycleBar';
 import { ViolationLinkConsistencyBox } from './ViolationLinkConsistencyBox';
@@ -63,6 +64,7 @@ interface LegalRelationsPanelProps {
   activeTargetId: string | null;
   onFocusTarget: (id: string, label: string, reveal?: boolean) => void;
   onJumpToPage: (page: number) => void;
+  onLocateEvidence: LocateEvidence;
   onHighlightEvidences?: (items: HighlightedEvidenceInput[]) => void;
   onJumpToEntityField?: (entityId: string, fieldCode?: string) => void;
   onSaveLegalItem: (item: LegalConclusionItem, auditNote?: string) => void;
@@ -111,7 +113,7 @@ const CATEGORY_LABELS: Record<LegalCategory, { title: string; fieldCode: string;
   liability: {
     title: '事故责任划分',
     fieldCode: 'D10.F060',
-    hint: '每个责任主体一条；文书写明“无责任”时同样属于有明确记载的责任结果。',
+    hint: '同一主体在同一事故阶段记录一条责任结论。文书写明“无责任”时同样属于有明确记载的责任结果。',
   },
 };
 
@@ -137,6 +139,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   activeTargetId,
   onFocusTarget,
   onJumpToPage,
+  onLocateEvidence,
   onHighlightEvidences,
   onJumpToEntityField,
   onSaveLegalItem,
@@ -174,6 +177,11 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   const causeRecords = caseDoc.legalConclusions.filter((l) => l.category === 'cause');
   const liabilityRecords = caseDoc.legalConclusions.filter((l) => l.category === 'liability');
 
+  const availableScope = nextLiabilityScope(
+    effectiveSubjectFilter === 'ALL' ? subjects.map(s => s.id) : [effectiveSubjectFilter],
+    events.map(e => e.id), liabilityRecords,
+  );
+
   const schemaNameByCode = useMemo(
     () => new Map(MASTER_FIELD_SCHEMA.map((f) => [f.fieldCode, f.fieldName])),
     [],
@@ -203,30 +211,21 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
     [caseDoc, resolvedChainAnchorId],
   );
 
+  // A responsibility quotation can recur for several parties; only verified line boxes may mark it.
+  const searchableCitations = useMemo(
+    () => activeChain?.evidences.filter(ev => ev.sourceKind !== 'liability') || [],
+    [activeChain],
+  );
   useEffect(() => {
-    if (subTab === 'evidence_chain' && activeChain) {
-      onHighlightEvidences?.(
-        activeChain.evidences.map((ev) => ({
-          page: ev.page,
-          quote: ev.quote,
-          label: ev.sourceLabel,
-        })),
-      );
-    } else {
-      onHighlightEvidences?.([]);
-    }
-  }, [subTab, activeChain, onHighlightEvidences]);
+    onHighlightEvidences?.(subTab === 'evidence_chain'
+      ? searchableCitations.map(ev => ({ page: ev.page, quote: ev.quote, label: ev.sourceLabel })) : []);
+    return () => onHighlightEvidences?.([]);
+  }, [subTab, searchableCitations, onHighlightEvidences]);
 
-  useEffect(() => {
-    return () => {
-      onHighlightEvidences?.([]);
-    };
-  }, [onHighlightEvidences]);
-
-  const matchedParagraphs = useMemo(() => {
-    if (!activeChain) return [];
-    return extractPdfParagraphMatches(pdfPageTexts, activeChain.evidences);
-  }, [pdfPageTexts, activeChain]);
+  const matchedParagraphs = useMemo(
+    () => extractPdfParagraphMatches(pdfPageTexts, searchableCitations),
+    [pdfPageTexts, searchableCitations],
+  );
 
   const visibleParagraphs = useMemo(() => {
     const hits = matchedParagraphs.filter((p) => p.matchedEvidences.length > 0);
@@ -241,52 +240,22 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
     }
     const catMeta = CATEGORY_LABELS[item.category];
     onFocusTarget(item.id, `${catMeta.title} (${item.id})`);
-    const chain = traceLegalEvidenceChain(caseDoc, item.id);
-    const firstPage = chain?.evidences[0]?.page || item.evidences[0]?.page;
-    if (firstPage && firstPage >= 1) {
-      onJumpToPage(firstPage);
-    }
   };
 
   const handleAddLegal = (category: LegalCategory) => {
     const preferredSubjectId =
       effectiveSubjectFilter !== 'ALL' ? effectiveSubjectFilter : subjects[0]?.id || 'P01';
-    let targetSubjectId = preferredSubjectId;
-
-    if (category === 'liability') {
-      const picked = pickDefaultLiabilitySubjectId(
-        subjects,
-        caseDoc.legalConclusions,
-        effectiveSubjectFilter !== 'ALL' ? effectiveSubjectFilter : undefined,
-      );
-      if (effectiveSubjectFilter !== 'ALL') {
-        const existingForSelected = getSubjectLiabilityRecords(
-          caseDoc.legalConclusions,
-          effectiveSubjectFilter,
-        )[0];
-        if (existingForSelected) {
-          onFocusTarget(
-            existingForSelected.id,
-            `${CATEGORY_LABELS.liability.title} (${existingForSelected.id})`,
-          );
-          return;
-        }
-      }
-      if (!picked) {
-        const existing = liabilityRecords[0];
-        if (existing) {
-          onFocusTarget(existing.id, `${CATEGORY_LABELS.liability.title} (${existing.id})`);
-        }
-        return;
-      }
-      targetSubjectId = picked;
+    if (category === 'liability' && !availableScope) {
+      const existing = liabilityRecords.find(item => effectiveSubjectFilter === 'ALL' || item.subjectId === effectiveSubjectFilter);
+      if (existing) onFocusTarget(existing.id, `${CATEGORY_LABELS.liability.title} (${existing.id})`);
+      return;
     }
 
     const newItem: LegalConclusionItem = {
       id: `${category === 'violation' ? 'VIO' : category === 'cause' ? 'CAU' : 'LIA'}-${Date.now().toString(36)}`,
       category,
-      subjectId: targetSubjectId,
-      eventId: events[0]?.id || '',
+      subjectId: category === 'liability' ? availableScope!.subjectId : preferredSubjectId,
+      eventId: category === 'liability' ? availableScope!.eventId : events[0]?.id || '',
       presenceStatus: 'present',
       rawText: '',
       lawArticle: '',
@@ -492,32 +461,13 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
         {subTab === 'legal' ? (
           <div className="flex flex-wrap items-center gap-3">
             {(['violation', 'cause', 'liability'] as LegalCategory[]).map((cat) => {
-              const selectedExistingLiability =
-                cat === 'liability' && effectiveSubjectFilter !== 'ALL'
-                  ? getSubjectLiabilityRecords(caseDoc.legalConclusions, effectiveSubjectFilter)[0] ||
-                    null
-                  : null;
-              const nextLiabilitySubject =
-                cat === 'liability' && effectiveSubjectFilter === 'ALL'
-                  ? pickDefaultLiabilitySubjectId(subjects, caseDoc.legalConclusions)
-                  : null;
-              const allLiabilitiesFilled =
-                cat === 'liability' &&
-                effectiveSubjectFilter === 'ALL' &&
-                subjects.length > 0 &&
-                nextLiabilitySubject === null;
-              const isExisting = Boolean(selectedExistingLiability) || allLiabilitiesFilled;
+              const isExisting = cat === 'liability' && !availableScope && subjects.length > 0;
               return (
                 <button
                   key={cat}
                   type="button"
-                  title={
-                    selectedExistingLiability
-                      ? `每个责任主体仅允许一条责任划分，点击定位 ${selectedExistingLiability.id}`
-                      : allLiabilitiesFilled
-                        ? '全部参与主体均已建立责任划分（每主体限一条）'
-                        : undefined
-                  }
+                  disabled={cat === 'liability' && !subjects.length}
+                  title={isExisting ? '所选主体各阶段的责任记录均已建立，点击查看。' : undefined}
                   onClick={() => handleAddLegal(cat)}
                   className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2.5 py-1.5 text-xs font-medium ${
                     isExisting
@@ -525,15 +475,10 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                       : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
                   }`}
                 >
-                  {selectedExistingLiability ? (
+                  {isExisting ? (
                     <>
                       <Check className="h-3.5 w-3.5 text-emerald-700" />
-                      已有责任 ({selectedExistingLiability.id})
-                    </>
-                  ) : allLiabilitiesFilled ? (
-                    <>
-                      <Check className="h-3.5 w-3.5 text-emerald-700" />
-                      已建全部责任
+                      已有责任记录
                     </>
                   ) : (
                     <>
@@ -556,7 +501,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
           </button>
         ) : (
           <div className="font-mono-tabular text-xs text-slate-500">
-            点击下方违法或责任记录自动联动定位全文证据
+            点击证据页码可定位到 PDF 原文
           </div>
         )}
       </div>
@@ -820,11 +765,11 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         const alreadyHasLiability =
                           item.category === 'liability' &&
                           s.id !== item.subjectId &&
-                          getSubjectLiabilityRecords(caseDoc.legalConclusions, s.id).length > 0;
+                          liabilityRecords.some(other => hasLiabilityScopeConflict(other, { subjectId: s.id, eventId: item.eventId }));
                         return (
-                          <option key={s.id} value={s.id}>
+                          <option key={s.id} value={s.id} disabled={alreadyHasLiability}>
                             {s.id} · {s.label}
-                            {alreadyHasLiability ? ' (已有责任划分)' : ''}
+                            {alreadyHasLiability ? ' (本阶段已有责任)' : ''}
                           </option>
                         );
                       })}
@@ -1274,8 +1219,11 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                 {/* Evidence Box */}
                 <div className="mt-3 rounded border border-slate-200 bg-slate-50/60 p-2.5">
                   <div className="mb-1.5 flex items-center justify-between text-xs">
-                    <span className="font-medium text-slate-700">支持证据（页码 + 最短摘录）</span>
-                      <button
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-medium text-slate-700">支持证据（页码 + 最短摘录）</span>
+                      <LiabilitySourceNote item={item} caseDoc={caseDoc} onLocate={onLocateEvidence} />
+                    </div>
+                    <button
                       type="button"
                       disabled={!selectedPdfQuote?.quote.trim()}
                       onClick={() => {
@@ -1300,13 +1248,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                   </div>
                   {item.evidences.map((ev) => (
                     <div key={ev.id} className="mt-1 flex items-center gap-2 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => onJumpToPage(ev.page)}
-                        className="font-mono-tabular shrink-0 font-medium text-blue-700 hover:underline"
-                      >
-                        p.{ev.page}
-                      </button>
+                      <EvidencePageLink record={item} evidence={ev} onLocate={onLocateEvidence} />
                       <input
                         type="text"
                         value={ev.quote}
@@ -1632,15 +1574,11 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                                     </p>
                                   )}
                                   <div className="mt-2 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-1.5">
-                                    {node.evidences[0] ? (
-                                      <button
-                                        type="button"
-                                        onClick={() => onJumpToPage(node.evidences[0].page)}
-                                        className="font-mono-tabular text-[11px] font-medium text-blue-700 hover:underline"
-                                      >
-                                        定位原文 p.{node.evidences[0].page}
-                                      </button>
-                                    ) : (
+                                    <LiabilitySourceNote item={node} caseDoc={caseDoc} onLocate={onLocateEvidence} />
+                                    {node.evidences.map(ev => (
+                                      <EvidencePageLink key={ev.id} record={node} evidence={ev} onLocate={onLocateEvidence} showQuote={node.evidences.length > 1} />
+                                    ))}
+                                    {!node.evidences.length && node.category !== 'liability' && (
                                       <span className="text-[11px] text-red-700">无页码证据</span>
                                     )}
                                     <button
@@ -1795,15 +1733,9 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                                 <div className="mt-1 flex items-center justify-between gap-2">
                                   <span className="text-slate-700">{valText}</span>
                                   <div className="flex shrink-0 items-center gap-2">
-                                    {rec.evidences[0] && (
-                                      <button
-                                        type="button"
-                                        onClick={() => onJumpToPage(rec.evidences[0].page)}
-                                        className="font-mono-tabular text-[11px] text-blue-700 hover:underline"
-                                      >
-                                        p.{rec.evidences[0].page}
-                                      </button>
-                                    )}
+                                    {rec.evidences.map(ev => (
+                                      <EvidencePageLink key={ev.id} record={rec} evidence={ev} onLocate={onLocateEvidence} showQuote={rec.evidences.length > 1} />
+                                    ))}
                                     {onJumpToEntityField && (
                                       <button
                                         type="button"
@@ -1840,6 +1772,9 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                                   {rel.relationType || rel.action} →{' '}
                                   {cleanRelationEntityId(rel.targetId)}
                                 </span>
+                                {rel.evidences.map(ev => (
+                                  <EvidencePageLink key={ev.id} record={rel} evidence={ev} onLocate={onLocateEvidence} showQuote={rel.evidences.length > 1} />
+                                ))}
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -1863,7 +1798,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         <span className="font-semibold text-slate-900">
                           链路证据引用清单 ({activeChain.evidences.length})
                         </span>
-                        <span className="text-slate-500">点击条目跳转并高亮左侧 PDF 原文</span>
+                        <span className="text-slate-500">点击摘录定位原文</span>
                       </div>
 
                       {activeChain.evidences.length === 0 ? (
@@ -1872,37 +1807,31 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         </p>
                       ) : (
                         <div className="flex max-h-[360px] flex-col gap-2 overflow-y-auto pr-1">
-                          {activeChain.evidences.map((ev) => (
-                            <button
-                              key={ev.id}
-                              type="button"
-                              onClick={() => {
-                                onJumpToPage(ev.page);
-                                onHighlightEvidences?.([
-                                  { page: ev.page, quote: ev.quote, label: ev.sourceLabel },
-                                  ...activeChain.evidences
-                                    .filter((x) => x.id !== ev.id)
-                                    .map((x) => ({
-                                      page: x.page,
-                                      quote: x.quote,
-                                      label: x.sourceLabel,
-                                    })),
-                                ]);
-                              }}
-                              className="flex flex-col gap-1 rounded border border-amber-200 bg-amber-50/40 p-2.5 text-left text-xs transition-colors hover:border-amber-400 hover:bg-amber-50"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="font-medium text-slate-900">
-                                  {ev.sourceLabel} ·{' '}
-                                  <span className="font-mono-tabular">{ev.subjectId}</span>
-                                </span>
-                                <span className="font-mono-tabular font-semibold text-blue-700">
-                                  p.{ev.page}
-                                </span>
-                              </div>
-                              <p className="leading-relaxed text-slate-700">{ev.quote}</p>
-                            </button>
-                          ))}
+                          {activeChain.evidences.map(ev => {
+                            const record = caseDoc.legalConclusions.find(item => item.id === ev.sourceId);
+                            const evidence = record?.evidences.find(item => `${record.id}:${item.id}` === ev.id);
+                            if (!record || !evidence) return null;
+                            return (
+                              <button
+                                key={ev.id}
+                                type="button"
+                                aria-label={`定位第 ${ev.page} 页原文 · ${ev.quote}`}
+                                onClick={() => onLocateEvidence(record, evidence)}
+                                className="flex flex-col gap-1 rounded border border-amber-200 bg-amber-50/40 p-2.5 text-left text-xs transition-colors hover:border-amber-400 hover:bg-amber-50"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="font-medium text-slate-900">
+                                    {ev.sourceLabel} ·{' '}
+                                    <span className="font-mono-tabular">{ev.subjectId}</span>
+                                  </span>
+                                  <span className="font-mono-tabular font-semibold text-blue-700">
+                                    p.{ev.page}
+                                  </span>
+                                </div>
+                                <p className="leading-relaxed text-slate-700">{ev.quote}</p>
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -2187,13 +2116,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                     {rel.evidences.map((ev) => (
                       <div key={ev.id} className="mt-1 flex items-center gap-2 text-xs">
-                        <button
-                          type="button"
-                          onClick={() => onJumpToPage(ev.page)}
-                          className="font-mono-tabular shrink-0 font-medium text-blue-700 hover:underline"
-                        >
-                          p.{ev.page}
-                        </button>
+                        <EvidencePageLink record={rel} evidence={ev} onLocate={onLocateEvidence} />
                         <input
                           type="text"
                           value={ev.quote}

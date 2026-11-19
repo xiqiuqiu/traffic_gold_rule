@@ -4,7 +4,9 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PdfPageEvidence } from './pageEvidence';
 import { Pool, type PoolClient } from 'pg';
-import type { CaseDocument } from '../types/gold';
+import type { CaseDocument, LiabilitySourceLine } from '../types/gold';
+import { resolveLiabilitySource } from './liabilityEvidence';
+import { getVerifiedLiabilitySource } from '../utils/liabilitySourceKey';
 import type { AnalysisTask, ExtendedRole, SystemAuditEvent } from '../types/system';
 import { extractAccidentBizId } from '../utils/systemEngine';
 
@@ -274,9 +276,34 @@ export async function getPdfTask(id: string): Promise<AnalysisTask | null> {
   return result.rows[0]?.task ?? null;
 }
 
+export async function getPdfSourceLines(taskId: string) {
+  const { rows } = await pool.query(`
+    SELECT t.sha256, a.body->>'extractionVersion' AS version FROM pdf_tasks t
+    JOIN pdf_run_artifacts a ON a.run_id=t.run_id AND a.kind='text' WHERE t.id=$1`, [taskId]);
+  const row = rows[0];
+  if (!row?.version) return null;
+  return {
+    fileSha256: `sha256:${row.sha256}`, extractionVersion: row.version,
+    lines: await readDocumentLines(row.sha256, row.version),
+  };
+}
+
 export async function getPdfDraft(id: string): Promise<CaseDocument | null> {
-  const result = await pool.query('SELECT draft FROM pdf_tasks WHERE id=$1', [id]);
-  return result.rows[0]?.draft ?? null;
+  const { rows } = await pool.query(`
+    SELECT t.draft, t.sha256, a.body->>'extractionVersion' AS version
+    FROM pdf_tasks t LEFT JOIN pdf_run_artifacts a ON a.run_id=t.run_id AND a.kind='text'
+    WHERE t.id=$1`, [id]);
+  const row = rows[0];
+  const draft: CaseDocument | null = row?.draft ?? null;
+  if (!draft || !row.version || draft.fileSha256 !== `sha256:${row.sha256}`) return draft;
+  const missing = draft.legalConclusions.filter(item => item.category === 'liability' &&
+    (!item.sourceLocation || (item.sourceLocation.status === 'verified' && !getVerifiedLiabilitySource(item, draft))));
+  if (missing.length) {
+    const lines = await readDocumentLines(row.sha256, row.version);
+    const lineSet = { fileSha256: draft.fileSha256, extractionVersion: row.version, lines };
+    for (const item of missing) item.sourceLocation = resolveLiabilitySource(item, draft.entities, lineSet);
+  }
+  return draft;
 }
 
 async function queueExisting(client: PoolClient, id: string, version?: string): Promise<AnalysisTask | null> {
@@ -365,6 +392,20 @@ export async function updatePdfProgress(lease: PdfLease, stage: 'parsing_pdf' | 
 }
 
 // Each page is an immutable cache entry. A run's text artifact pins its extractionVersion.
+async function readDocumentLines(hash: string, version: string): Promise<LiabilitySourceLine[]> {
+  const result = await pool.query<LiabilitySourceLine>(`
+    SELECT concat(p.id, ':', l.line_number) AS "lineId", p.page_number AS page,
+           l.line_number AS "lineNumber", l.line_text AS text, l.bbox
+    FROM pdf_pages p JOIN pdf_page_lines l ON l.page_id=p.id
+    WHERE p.sha256=$1 AND p.extraction_version=$2
+    ORDER BY p.page_number, l.line_number`, [hash, version]);
+  return result.rows;
+}
+
+export function readRunEvidenceLines(lease: PdfLease, extractionVersion: string) {
+  return readDocumentLines(lease.task.fileSha256.slice(7), extractionVersion);
+}
+
 export async function readCachedPageText(lease: PdfLease, version: string, pageNumber: number): Promise<string | null> {
   const cached = await pool.query('SELECT page_text FROM pdf_pages WHERE sha256=$1 AND extraction_version=$2 AND page_number=$3',
     [lease.task.fileSha256.slice(7), version, pageNumber]);
