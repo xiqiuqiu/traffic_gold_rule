@@ -61,7 +61,7 @@ interface LegalRelationsPanelProps {
   selectedPdfQuote: { page: number; quote: string } | null;
   pdfPageTexts?: Record<number, string>;
   activeTargetId: string | null;
-  onFocusTarget: (id: string, label: string) => void;
+  onFocusTarget: (id: string, label: string, reveal?: boolean) => void;
   onJumpToPage: (page: number) => void;
   onHighlightEvidences?: (items: HighlightedEvidenceInput[]) => void;
   onJumpToEntityField?: (entityId: string, fieldCode?: string) => void;
@@ -161,15 +161,6 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
       setStatusFilter('all');
     }
   }, [externalFocusRequest]);
-
-  useEffect(() => {
-    if (!activeTargetId) return;
-    const timer = window.setTimeout(() => {
-      const el = document.querySelector(`[data-focus-id="${CSS.escape(activeTargetId)}"]`);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 60);
-    return () => window.clearTimeout(timer);
-  }, [activeTargetId, subTab]);
 
   const subjects = caseDoc.entities.filter((e) => e.kind === 'P' || e.kind === 'O');
   const events = caseDoc.entities.filter((e) => e.kind === 'E');
@@ -770,7 +761,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               <div
                 key={item.id}
                 data-focus-id={item.id}
-                onClick={() => onFocusTarget(item.id, `${catMeta.title} (${item.id})`)}
+                onClick={() => onFocusTarget(item.id, `${catMeta.title} (${item.id})`, false)}
                 className={`rounded-lg border p-4 transition-colors ${getCardStatusBorderClass(
                   item.reviewStatus,
                   hasError,
@@ -1974,7 +1965,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                 <div
                   key={rel.id}
                   data-focus-id={rel.id}
-                  onClick={() => onFocusTarget(rel.id, `事件关系 (${rel.id})`)}
+                  onClick={() => onFocusTarget(rel.id, `事件关系 (${rel.id})`, false)}
                   className={`rounded-lg border p-4 transition-colors ${getCardStatusBorderClass(
                     rel.reviewStatus,
                     hasError,

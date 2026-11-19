@@ -56,7 +56,7 @@ interface FieldAnnotationPanelProps {
   activeRecordKey: string | null;
   activeLegalOrRelId: string | null;
   onFocusRecord: (entityId: string, fieldCode: string) => void;
-  onFocusLegalOrRel: (id: string, label: string) => void;
+  onFocusLegalOrRel: (id: string, label: string, reveal?: boolean) => void;
   selectedPdfQuote: { page: number; quote: string } | null;
   onJumpToPage: (page: number) => void;
   onUpsertFieldRecord: (record: FieldRecord, auditNote?: string) => void;
@@ -111,16 +111,6 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
       setSearchQuery('');
     }
   }, [externalBucketRequest]);
-
-  useEffect(() => {
-    const focusTarget = activeLegalOrRelId || activeRecordKey;
-    if (!focusTarget) return;
-    const timer = window.setTimeout(() => {
-      const el = document.querySelector(`[data-focus-id="${CSS.escape(focusTarget)}"]`);
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 60);
-    return () => window.clearTimeout(timer);
-  }, [activeRecordKey, activeLegalOrRelId, selectedEntity.id]);
 
   const supplementByCode = useMemo(
     () => new Map(supplements.map((s) => [s.fieldCode, s])),
@@ -1110,7 +1100,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       key={item.id}
                       data-focus-id={item.id}
                       onClick={() =>
-                        onFocusLegalOrRel(item.id, `${selectedEntity.id} · ${catTitle}`)
+                        onFocusLegalOrRel(item.id, `${selectedEntity.id} · ${catTitle}`, false)
                       }
                       className={`rounded-md border p-3 transition-colors ${getCardStatusBorderClass(
                         item.reviewStatus,
@@ -1828,7 +1818,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         key={rel.id}
                         data-focus-id={rel.id}
                         onClick={() =>
-                          onFocusLegalOrRel(rel.id, `${selectedEntity.id} · 碰撞关系`)
+                          onFocusLegalOrRel(rel.id, `${selectedEntity.id} · 碰撞关系`, false)
                         }
                         className={`rounded-md border p-3 text-xs transition-colors ${getCardStatusBorderClass(
                           rel.reviewStatus,

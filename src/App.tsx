@@ -201,6 +201,10 @@ export default function App() {
     id: string;
     label: string;
   } | null>(null);
+  const [recordScrollRequest, setRecordScrollRequest] = useState<{
+    tab: 'fields' | 'legal';
+    id: string;
+  } | null>(null);
   const [queueStatusFilter, setQueueStatusFilter] =
     useState<WorkItemFilterStatus>('pending_action');
   const [fieldBucketRequest, setFieldBucketRequest] = useState<{
@@ -465,6 +469,21 @@ export default function App() {
       // Non-fatal offline tolerance
     }
   }, []);
+
+  useEffect(() => {
+    if (!recordScrollRequest) return;
+    if (systemView !== 'detail' || activeTab !== recordScrollRequest.tab) {
+      setRecordScrollRequest(null);
+      return;
+    }
+    // Allow the destination panel to apply its filters before revealing the record.
+    const timer = window.setTimeout(() => {
+      document.querySelector(`[data-focus-id="${CSS.escape(recordScrollRequest.id)}"]`)
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setRecordScrollRequest(null);
+    }, 60);
+    return () => window.clearTimeout(timer);
+  }, [recordScrollRequest, activeTab, systemView]);
 
   // Reset entity selection when switching case
   useEffect(() => {
@@ -809,7 +828,9 @@ export default function App() {
       setActiveTab('fields');
       setSelectedEntityId(item.entityId);
       setFocusedLegalOrRelId(null);
-      setFocusedFieldKey(`${item.entityId}:${item.fieldCode}`);
+      const id = `${item.entityId}:${item.fieldCode}`;
+      setFocusedFieldKey(id);
+      setRecordScrollRequest({ tab: 'fields', id });
       setFieldBucketRequest({ bucket: 'all', nonce: Date.now() });
       return;
     }
@@ -817,6 +838,7 @@ export default function App() {
       setActiveTab('legal');
       setFocusedFieldKey(null);
       setFocusedLegalOrRelId({ id: item.legalOrRelId, label: item.title });
+      setRecordScrollRequest({ tab: 'legal', id: item.legalOrRelId });
       setLegalFocusRequest({
         subTab: item.relationSubTab || 'legal',
         nonce: Date.now(),
@@ -1542,7 +1564,9 @@ export default function App() {
       if (targetFieldCode) {
         setSelectedEntityId('ACC');
         setFocusedLegalOrRelId(null);
-        setFocusedFieldKey(`ACC:${targetFieldCode}`);
+        const id = `ACC:${targetFieldCode}`;
+        setFocusedFieldKey(id);
+        setRecordScrollRequest({ tab: 'fields', id });
         setFieldBucketRequest({ bucket: 'all', nonce: Date.now() });
       }
     },
@@ -2144,9 +2168,10 @@ export default function App() {
                     setFocusedLegalOrRelId(null);
                     setFocusedFieldKey(`${entityId}:${fieldCode}`);
                   }}
-                  onFocusLegalOrRel={(id, label) => {
+                  onFocusLegalOrRel={(id, label, reveal = true) => {
                     setFocusedFieldKey(null);
                     setFocusedLegalOrRelId({ id, label });
+                    if (reveal) setRecordScrollRequest({ tab: 'fields', id });
                   }}
                   selectedPdfQuote={selectedPdfQuote}
                   onJumpToPage={(page) => setCurrentPdfPage(page)}
@@ -2170,14 +2195,19 @@ export default function App() {
                 selectedPdfQuote={selectedPdfQuote}
                 pdfPageTexts={pdfPageTexts}
                 activeTargetId={focusedLegalOrRelId?.id || null}
-                onFocusTarget={(id, label) => setFocusedLegalOrRelId({ id, label })}
+                onFocusTarget={(id, label, reveal = true) => {
+                  setFocusedLegalOrRelId({ id, label });
+                  if (reveal) setRecordScrollRequest({ tab: 'legal', id });
+                }}
                 onJumpToPage={(page) => setCurrentPdfPage(page)}
                 onHighlightEvidences={setHighlightedEvidences}
                 onJumpToEntityField={(entityId, fieldCode) => {
                   setActiveTab('fields');
                   setSelectedEntityId(entityId);
                   setFocusedLegalOrRelId(null);
-                  setFocusedFieldKey(fieldCode ? `${entityId}:${fieldCode}` : null);
+                  const id = fieldCode ? `${entityId}:${fieldCode}` : null;
+                  setFocusedFieldKey(id);
+                  if (id) setRecordScrollRequest({ tab: 'fields', id });
                   setFieldBucketRequest({ bucket: 'all', nonce: Date.now() });
                 }}
                 onSaveLegalItem={handleSaveLegalItem}
