@@ -231,7 +231,7 @@ export default function App() {
   const [aiSettings, setAiSettings] = useState<AiProviderSettings>(loadAiProviderSettings);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const quickUploadRef = useRef<HTMLInputElement | null>(null);
+  const uploadDialogRef = useRef<HTMLDialogElement>(null);
 
   // Latest state refs for async pipelines
   const casesRef = useRef(cases);
@@ -1171,7 +1171,7 @@ export default function App() {
     [canUploadAndRun, notifyPermissionBlocked, patchTaskState, recordAuditEvent],
   );
 
-  // Manual PDF upload task creation (shared by TaskCenterPanel and Detail workbench upload)
+  // Manual PDF upload task creation (shared by the header and detail workbench)
   const handleManualUploadPdf = useCallback(
     async (
       file: File,
@@ -1660,20 +1660,6 @@ export default function App() {
         </nav>
 
         <div className="flex shrink-0 items-center gap-2">
-          <input
-            ref={quickUploadRef}
-            type="file"
-            accept="application/pdf"
-            aria-label="快捷上传本地 PDF 创建任务"
-            onChange={async (e) => {
-              const file = e.target.files?.[0];
-              e.target.value = '';
-              if (!file) return;
-              setSystemView('tasks');
-              await handleManualUploadPdf(file, true);
-            }}
-            className="hidden"
-          />
           {systemView === 'detail' ? (
             <button
               type="button"
@@ -1686,12 +1672,8 @@ export default function App() {
             <button
               type="button"
               disabled={!canUploadAndRun}
-              onClick={() => {
-                if (systemView !== 'tasks') {
-                  setSystemView('tasks');
-                }
-                quickUploadRef.current?.click();
-              }}
+              aria-haspopup="dialog"
+              onClick={() => uploadDialogRef.current?.showModal()}
               className="shrink-0 whitespace-nowrap rounded-md bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               上传 PDF 分析
@@ -1746,6 +1728,77 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <dialog
+        ref={uploadDialogRef}
+        aria-labelledby="upload-pdf-title"
+        onClose={(e) => e.currentTarget.querySelector('form')?.reset()}
+        className="m-auto w-[min(26rem,calc(100%-2rem))] rounded-lg border border-slate-200 bg-white p-5 text-slate-900 shadow-lg backdrop:bg-slate-900/35"
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const data = new FormData(e.currentTarget);
+            const file = data.get('pdf');
+            if (!canUploadAndRun || !(file instanceof File) || !file.name) return;
+            uploadDialogRef.current?.close();
+            setSystemView('tasks');
+            void handleManualUploadPdf(file, data.get('mode') === 'analyze');
+          }}
+        >
+          <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
+            <h2 id="upload-pdf-title" className="text-sm font-semibold">上传 PDF 分析</h2>
+            <button
+              type="button"
+              aria-label="关闭上传窗口"
+              onClick={() => uploadDialogRef.current?.close()}
+              className="rounded p-1 text-slate-500 hover:bg-slate-100"
+            >
+              <X className="h-4 w-4" aria-hidden="true" />
+            </button>
+          </div>
+          <label className="mt-4 block text-xs font-medium text-slate-700">
+            PDF 文件
+            <input
+              type="file"
+              name="pdf"
+              accept=".pdf,application/pdf"
+              required
+              className="mt-1.5 block w-full rounded border border-slate-300 p-2 text-xs file:mr-3 file:rounded file:bg-slate-100 file:px-2.5 file:py-1 file:font-medium hover:file:bg-slate-200"
+            />
+          </label>
+          <label className="mt-3 block text-xs font-medium text-slate-700">
+            创建后
+            <select
+              name="mode"
+              defaultValue="analyze"
+              className="mt-1.5 block w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
+            >
+              <option value="analyze">立即开始解析</option>
+              <option value="idle">暂存待命，稍后解析</option>
+            </select>
+          </label>
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => {
+                uploadDialogRef.current?.close();
+                handleOpenModelSettings();
+              }}
+              className="text-xs font-medium text-blue-700 hover:underline"
+            >
+              配置提取模型
+            </button>
+            <button
+              type="submit"
+              disabled={!canUploadAndRun}
+              className="rounded-md bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:bg-slate-300"
+            >
+              创建任务
+            </button>
+          </div>
+        </form>
+      </dialog>
 
       {systemView === 'detail' && (
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-2">
@@ -1868,13 +1921,9 @@ export default function App() {
             lastScanError={lastScanError}
             onSaveSchedule={handleSaveSchedule}
             onTriggerDirectoryScan={handleTriggerDirectoryScan}
-            onManualUploadPdf={async (file, startImmediately) =>
-              handleManualUploadPdf(file, startImmediately)
-            }
             onRunTaskPipeline={async (taskId) => handleRunTaskPipeline(taskId)}
             onOpenCaseDetail={(caseId) => handleOpenCaseDetail(caseId)}
             onDeleteTask={handleDeleteTask}
-            onOpenModelSettings={handleOpenModelSettings}
           />
         </main>
       )}
