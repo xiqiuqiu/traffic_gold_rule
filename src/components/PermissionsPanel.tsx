@@ -1,3 +1,4 @@
+import { WorkbenchPage, WorkbenchPageTabs } from './WorkbenchPage';
 import React, { useEffect, useState } from 'react';
 import { CheckCircle2, RotateCcw, Shield, Sliders, UserCheck } from 'lucide-react';
 import {
@@ -90,38 +91,17 @@ export const PermissionsPanel: React.FC<PermissionsPanelProps> = ({
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-5 px-6 py-5">
-      {/* Sub-navigation between RBAC & Model Connection Settings */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
-        <div className="flex items-center gap-1 rounded-md bg-slate-200/70 p-0.5 text-xs">
-          <button
-            type="button"
-            onClick={() => setSubTab('rbac')}
-            className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-3 py-1.5 font-medium transition-colors ${
-              subTab === 'rbac' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Shield className="h-3.5 w-3.5" aria-hidden="true" />
-            快捷身份切换与角色权限矩阵
-          </button>
-          <button
-            type="button"
-            onClick={() => setSubTab('model')}
-            className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded px-3 py-1.5 font-medium transition-colors ${
-              subTab === 'model' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <Sliders className="h-3.5 w-3.5" aria-hidden="true" />
-            大模型接入与探测设置
-          </button>
-        </div>
-
-        <span className="text-xs text-slate-500">
-          当前活跃身份：<strong className="text-slate-900">{activeIdentity.name}</strong> ·{' '}
-          {EXTENDED_ROLE_META[activeIdentity.role].label}
-        </span>
-      </div>
-
+    <WorkbenchPage>
+      <WorkbenchPageTabs<'rbac' | 'model'>
+        label="权限与设置"
+        value={subTab}
+        onChange={setSubTab}
+        items={[
+          { value: 'rbac', label: '快捷身份切换与角色权限矩阵', icon: Shield },
+          { value: 'model', label: '大模型接入与探测设置', icon: Sliders },
+        ]}
+        aside={<span className="text-xs text-slate-500">当前活跃身份：<strong className="text-slate-900">{activeIdentity.name}</strong> · {EXTENDED_ROLE_META[activeIdentity.role].label}</span>}
+      >
       {subTab === 'model' ? (
         <div className="rounded-lg border border-slate-200 bg-white">
           <ModelSettingsPanel
@@ -262,6 +242,7 @@ export const PermissionsPanel: React.FC<PermissionsPanelProps> = ({
           </section>
         </>
       )}
-    </div>
+      </WorkbenchPageTabs>
+    </WorkbenchPage>
   );
 };

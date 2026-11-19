@@ -1,3 +1,4 @@
+import { WorkbenchPage } from './WorkbenchPage';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
@@ -118,7 +119,7 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
   };
 
   return (
-    <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-5 px-6 py-5">
+    <WorkbenchPage>
       {taskListError && <p role="alert" className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{taskListError}，正在重新连接任务队列。</p>}
       {/* Summary KPI Strip */}
       <section
@@ -520,6 +521,6 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
           </table>
         </div>
       </section>
-    </div>
+    </WorkbenchPage>
   );
 };

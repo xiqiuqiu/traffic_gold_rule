@@ -14,6 +14,11 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
+import { Toaster } from 'sonner';
+import { CatalogContext } from './components/useCatalogOptions';
+import { api as catalogApi } from './utils/catalogApi';
+import type { CatalogOptions } from './types/catalog';
+import { CodebookView } from './components/CodebookView';
 import { AcceptanceExportPanel } from './components/AcceptanceExportPanel';
 import { AuditTrailPanel } from './components/AuditTrailPanel';
 import { EntityRegistryBar } from './components/EntityRegistryBar';
@@ -91,7 +96,7 @@ import {
   mapExtendedRoleToWorkbenchRole,
 } from './utils/systemEngine';
 
-type SystemView = 'tasks' | 'detail' | 'similar' | 'audit' | 'system';
+type SystemView = 'catalog' | 'tasks' | 'detail' | 'similar' | 'audit' | 'system';
 type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export';
 
 const STORAGE_CASES_KEY = 'gold_workbench_cases_v3';
@@ -265,6 +270,21 @@ export default function App() {
     activeIdentity.role,
     'system:audit_permissions',
   );
+
+  const [catalogOptions, setCatalogOptions] = useState<CatalogOptions>({});
+  useEffect(() => {
+    if (systemView !== 'detail') return;
+    let active = true;
+    setCatalogOptions({});
+    if (hasPermission(rolePermissions, activeIdentity.role, 'task:view')) {
+      catalogApi.fieldOptions(activeIdentity.id).then(options => {
+        if (active) setCatalogOptions(options);
+      }).catch(() => {
+        if (active) setPermissionNotice('标签库暂时不可用，当前显示案件原有词项。');
+      });
+    }
+    return () => { active = false; };
+  }, [systemView, activeIdentity.id, activeIdentity.role, rolePermissions]);
 
   const notifyPermissionBlocked = useCallback((message: string) => {
     setPermissionNotice(message);
@@ -1455,6 +1475,7 @@ export default function App() {
             [
               ['tasks', '任务调度'],
               ['similar', '类案与融合'],
+              ['catalog', '标签库'],
               ['audit', '全链路审计'],
               ['system', '权限与设置'],
             ] as Array<[Exclude<SystemView, 'detail'>, string]>
@@ -1754,6 +1775,15 @@ export default function App() {
         </main>
       )}
 
+      {systemView === 'catalog' && (
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          {hasPermission(rolePermissions, activeIdentity.role, 'task:view')
+            ? <CodebookView key={activeIdentity.id} userId={activeIdentity.id} canManage={canAdjudicate} />
+            : <p className="mx-auto max-w-[1400px] px-6 py-5 text-sm text-slate-600">当前身份没有标签库查看权限。</p>}
+          <Toaster position="bottom-right" closeButton />
+        </main>
+      )}
+
       {systemView === 'similar' && (
         <main className="min-h-0 flex-1 overflow-y-auto">
           <SimilarCaseFusionPanel
@@ -1809,7 +1839,7 @@ export default function App() {
       )}
 
       {systemView === 'detail' && (
-        <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-12">
+        <CatalogContext.Provider value={catalogOptions}><main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-12">
           {/* Left Pane: Real PDF Renderer & Evidence Selector */}
           <div className="min-h-[380px] lg:col-span-5 lg:h-full lg:min-h-0">
             <PdfEvidenceViewer
@@ -2157,7 +2187,7 @@ export default function App() {
             )}
             </>}
           </div>
-        </main>
+        </main></CatalogContext.Provider>
       )}
 
       <ManualDrawer open={manualOpen} onClose={() => setManualOpen(false)} />

@@ -1,0 +1,27 @@
+{
+  "schema_version": "1.0",
+  "maintained": "hand",
+  "aliases": {
+    "tq": {
+      "阴天": "2"
+    },
+    "zmtj": {
+      "夜间无照明": "3"
+    }
+  },
+  "query_groups": {
+    "cllx": {
+      "摩托车": [
+        "M11",
+        "M12",
+        "M13",
+        "M14",
+        "M15",
+        "M21",
+        "M22"
+      ]
+    }
+  },
+  "extension_tags": {},
+  "next_ext_seq": 1
+}

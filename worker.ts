@@ -4,6 +4,7 @@ import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { INITIAL_VOCABULARY_SUPPLEMENTS } from './src/data/schemaCatalog';
 import type { CaseDocument } from './src/types/gold';
+import { observationReader } from './src/server/catalog/workbench';
 import { buildAiSchemaCatalogPayload, mapAiExtractionToCaseDraft } from './src/utils/aiPreanalyze';
 import { getActiveModelSummary } from './src/utils/aiSettings';
 import { createPlaceholderCaseForTask } from './src/utils/taskCase';
@@ -63,6 +64,7 @@ async function processLease(lease: PdfLease) {
         const modelLabel = `${summary.providerLabel} · ${summary.modelName}`;
         requireLease(await updatePdfProgress(lease, 'ai_extracting', '正在调用大模型生成案件草稿', 70, modelLabel));
         const supplements = INITIAL_VOCABULARY_SUPPLEMENTS;
+        const collectObservations = observationReader();
         const payload = await preanalyzePdf({
           caseId: task.caseId, sourceFilename: task.filename, pageCount: pages.pageCount,
           schemaCatalog: buildAiSchemaCatalogPayload(supplements),
@@ -73,6 +75,7 @@ async function processLease(lease: PdfLease) {
           { supplements, actorLabel: modelLabel, actorRole: mapExtendedRoleToWorkbenchRole(task.createdByRole) },
         );
         const draft = linkLiabilitySources(nextCase, { fileSha256: task.fileSha256, extractionVersion: pages.extractionVersion, lines });
+        draft.tagResidue = collectObservations(draft);
         requireLease(await savePdfArtifact(lease, 'draft', draft));
         return { stage: 'draft' as const };
       })

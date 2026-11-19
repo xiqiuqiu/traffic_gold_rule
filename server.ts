@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { catalogRouter } from './src/server/catalog/routes';
 import fs from 'node:fs/promises';
 import express from 'express';
 import path from 'node:path';
@@ -41,6 +42,8 @@ async function startServer() {
   const app = express();
   const httpServer = createServer(app);
   app.use(express.json({ limit: '30mb' }));
+
+  app.use('/api', catalogRouter());
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });

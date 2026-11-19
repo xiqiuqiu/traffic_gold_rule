@@ -1,3 +1,4 @@
+import { useCatalogOptions } from './useCatalogOptions';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -30,7 +31,6 @@ import {
   VocabularySupplementItem,
 } from '../types/gold';
 import {
-  buildControlledVocabOptions,
   cleanRelationEntityId,
   computeEntityWorkbenchStats,
   deriveTimeBucket,
@@ -101,6 +101,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
   onOpenLegalTab,
   externalBucketRequest,
 }) => {
+  const buildControlledVocabOptions = useCatalogOptions();
   const [groupFilter, setGroupFilter] = useState<'ALL' | GroupCode>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusBucket, setStatusBucket] = useState<FieldFilterBucket>('all');

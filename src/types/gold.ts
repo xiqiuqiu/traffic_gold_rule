@@ -1,3 +1,5 @@
+import type { TagResidue } from './catalog';
+
 export type EntityKind = 'ACC' | 'P' | 'V' | 'E' | 'R' | 'I' | 'O';
 
 export type PresenceStatus =
@@ -162,6 +164,7 @@ export interface AuditLogEntry {
 }
 
 export interface CaseDocument {
+  tagResidue?: TagResidue[];
   caseId: string;
   documentId?: string;
   title: string;

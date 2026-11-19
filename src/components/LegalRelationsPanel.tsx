@@ -1,3 +1,4 @@
+import { useCatalogOptions } from './useCatalogOptions';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -30,7 +31,6 @@ import {
   WorkItemFilterStatus,
 } from '../types/gold';
 import {
-  buildControlledVocabOptions,
   cleanRelationEntityId,
   extractPdfParagraphMatches,
   findTextMatchRanges,
@@ -148,6 +148,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   onDeleteRelationItem,
   externalFocusRequest,
 }) => {
+  const buildControlledVocabOptions = useCatalogOptions();
   const [subTab, setSubTab] = useState<'legal' | 'evidence_chain' | 'relations'>('legal');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | LegalCategory>('ALL');
   const [subjectFilter, setSubjectFilter] = useState<'ALL' | string>('ALL');
