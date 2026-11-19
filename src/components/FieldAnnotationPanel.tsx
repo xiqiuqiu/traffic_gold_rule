@@ -34,6 +34,9 @@ import {
   cleanRelationEntityId,
   computeEntityWorkbenchStats,
   deriveTimeBucket,
+  getScopedCauseCandidatesForLiability,
+  getScopedViolationCandidatesForCause,
+  getSubjectLiabilityRecords,
   matchesFieldRecordBucket,
   matchesWorkItemStatus,
   sortLegalConclusionsByChain,
@@ -99,6 +102,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
   const [groupFilter, setGroupFilter] = useState<'ALL' | GroupCode>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusBucket, setStatusBucket] = useState<FieldFilterBucket>('all');
+  const [expandedCrossSubjectMap, setExpandedCrossSubjectMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (externalBucketRequest) {
@@ -884,59 +888,92 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
               })()}
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              {(
-                [
-                  ['violation', '违法行为', 'D10.F058'],
-                  ['cause', '认定原因', 'D10.F059'],
-                  ['liability', '责任划分', 'D10.F060'],
-                ] as Array<[LegalCategory, string, string]>
-              ).map(([cat, label]) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => {
-                    const events = caseDoc.entities.filter((e) => e.kind === 'E');
-                    const newItem: LegalConclusionItem = {
-                      id: `${cat === 'violation' ? 'VIO' : cat === 'cause' ? 'CAU' : 'LIA'}-${Date.now().toString(36)}`,
-                      category: cat,
-                      subjectId: selectedEntity.id,
-                      eventId: events[0]?.id || '',
-                      presenceStatus: 'present',
-                      rawText: '',
-                      lawArticle: '',
-                      conclusionLabel: cat === 'liability' ? '全部责任' : '',
-                      ...(cat !== 'liability'
-                        ? { causalLinkStatus: 'unspecified' as CausalLinkStatus, linkedViolationIds: [] }
-                        : { linkedCauseIds: [] }),
-                      ...(cat === 'violation'
-                        ? {
-                            linkedEntityIds: [],
-                            linkedVocabTerms: [],
-                            linkConsistencyConfirmed: false,
-                          }
-                        : {}),
-                      evidences: selectedPdfQuote
-                        ? [
-                            {
-                              id: `EV-${Date.now().toString(36)}`,
-                              page: selectedPdfQuote.page,
-                              quote: selectedPdfQuote.quote,
-                            },
-                          ]
-                        : [],
-                      reviewStatus: 'draft',
-                      disputeReason: '',
-                      adjudicatorNote: '',
-                    };
-                    onSaveLegalItem(newItem);
-                    onFocusLegalOrRel(newItem.id, `${selectedEntity.id} · ${label}`);
-                  }}
-                  className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900"
-                >
-                  <Plus className="h-3 w-3" />
-                  新增{label}
-                </button>
-              ))}
+              {(() => {
+                const existingSubjectLiability =
+                  getSubjectLiabilityRecords(caseDoc.legalConclusions, selectedEntity.id)[0] ||
+                  null;
+                return (
+                  [
+                    ['violation', '违法行为', 'D10.F058'],
+                    ['cause', '认定原因', 'D10.F059'],
+                    ['liability', '责任划分', 'D10.F060'],
+                  ] as Array<[LegalCategory, string, string]>
+                ).map(([cat, label]) => {
+                  const isExistingLiability = cat === 'liability' && existingSubjectLiability !== null;
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      title={
+                        isExistingLiability
+                          ? `每个责任主体仅允许一条责任划分，点击定位 ${existingSubjectLiability.id}`
+                          : undefined
+                      }
+                      onClick={() => {
+                        if (isExistingLiability && existingSubjectLiability) {
+                          onFocusLegalOrRel(
+                            existingSubjectLiability.id,
+                            `${selectedEntity.id} · ${label}`,
+                          );
+                          return;
+                        }
+                        const events = caseDoc.entities.filter((e) => e.kind === 'E');
+                        const newItem: LegalConclusionItem = {
+                          id: `${cat === 'violation' ? 'VIO' : cat === 'cause' ? 'CAU' : 'LIA'}-${Date.now().toString(36)}`,
+                          category: cat,
+                          subjectId: selectedEntity.id,
+                          eventId: events[0]?.id || '',
+                          presenceStatus: 'present',
+                          rawText: '',
+                          lawArticle: '',
+                          conclusionLabel: cat === 'liability' ? '全部责任' : '',
+                          ...(cat !== 'liability'
+                            ? { causalLinkStatus: 'unspecified' as CausalLinkStatus, linkedViolationIds: [] }
+                            : { linkedCauseIds: [] }),
+                          ...(cat === 'violation'
+                            ? {
+                                linkedEntityIds: [],
+                                linkedVocabTerms: [],
+                                linkConsistencyConfirmed: false,
+                              }
+                            : {}),
+                          evidences: selectedPdfQuote
+                            ? [
+                                {
+                                  id: `EV-${Date.now().toString(36)}`,
+                                  page: selectedPdfQuote.page,
+                                  quote: selectedPdfQuote.quote,
+                                },
+                              ]
+                            : [],
+                          reviewStatus: 'draft',
+                          disputeReason: '',
+                          adjudicatorNote: '',
+                        };
+                        onSaveLegalItem(newItem);
+                        onFocusLegalOrRel(newItem.id, `${selectedEntity.id} · ${label}`);
+                      }}
+                      className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium ${
+                        isExistingLiability
+                          ? 'border border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                          : 'text-slate-700 hover:bg-slate-100 hover:text-slate-900'
+                      }`}
+                    >
+                      {isExistingLiability ? (
+                        <>
+                          <Check className="h-3 w-3 text-emerald-700" />
+                          已有责任划分 ({existingSubjectLiability?.id})
+                        </>
+                      ) : (
+                        <>
+                          <Plus className="h-3 w-3" />
+                          新增{label}
+                        </>
+                      )}
+                    </button>
+                  );
+                });
+              })()}
             </div>
           </div>
 
@@ -964,21 +1001,16 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                   const legalIssues = validateLegalConclusion(item, {
                     entities: caseDoc.entities,
                     supplements,
+                    allLegalConclusions: caseDoc.legalConclusions,
                   });
                   const legalHasErr =
                     PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
                     legalIssues.some((i) => i.severity === 'error');
                   const isItemFocused = activeLegalOrRelId === item.id;
-                  const prioritizedViolations = [...allViolations].sort((a, b) => {
-                    const aSame = a.subjectId === item.subjectId ? 0 : 1;
-                    const bSame = b.subjectId === item.subjectId ? 0 : 1;
-                    return aSame - bSame;
-                  });
-                  const prioritizedCauses = [...allCauses].sort((a, b) => {
-                    const aSame = a.subjectId === item.subjectId ? 0 : 1;
-                    const bSame = b.subjectId === item.subjectId ? 0 : 1;
-                    return aSame - bSame;
-                  });
+                  const scopedViolations = getScopedViolationCandidatesForCause(item, allViolations);
+                  const scopedCauses = getScopedCauseCandidatesForLiability(item, allCauses);
+                  const isCrossVioExpanded = !!expandedCrossSubjectMap[`${item.id}:vio`];
+                  const isCrossCauExpanded = !!expandedCrossSubjectMap[`${item.id}:cau`];
                   const referencingCauses =
                     item.category === 'violation'
                       ? allCauses.filter((c) => (c.linkedViolationIds || []).includes(item.id))
@@ -1279,13 +1311,13 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                                   补录违法行为并关联
                                 </button>
                               </div>
-                              {prioritizedViolations.length === 0 ? (
+                              {scopedViolations.primaryItems.length === 0 ? (
                                 <span className="text-xs text-slate-400">
-                                  暂无可勾选违法记录，请点击右上「补录违法行为并关联」
+                                  当前主体 {item.subjectId} 暂无可勾选违法记录，请点击右上「补录违法行为并关联」
                                 </span>
                               ) : (
                                 <div className="flex flex-wrap gap-1.5">
-                                  {prioritizedViolations.map((vio) => {
+                                  {scopedViolations.primaryItems.map((vio) => {
                                     const checked = (item.linkedViolationIds || []).includes(vio.id);
                                     return (
                                       <label
@@ -1328,6 +1360,70 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                                   })}
                                 </div>
                               )}
+                              {scopedViolations.otherItems.length > 0 && (
+                                <div className="mt-1.5 border-t border-slate-100 pt-1">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setExpandedCrossSubjectMap((prev) => ({
+                                        ...prev,
+                                        [`${item.id}:vio`]: !prev[`${item.id}:vio`],
+                                      }));
+                                    }}
+                                    className="text-[11px] font-medium text-slate-500 hover:text-slate-800 hover:underline"
+                                  >
+                                    {isCrossVioExpanded
+                                      ? '收起其他主体违法记录'
+                                      : `显示其他主体违法 (+${scopedViolations.otherItems.length})`}
+                                  </button>
+                                  {isCrossVioExpanded && (
+                                    <div className="mt-1 flex flex-wrap gap-1.5">
+                                      {scopedViolations.otherItems.map((vio) => {
+                                        const checked = (item.linkedViolationIds || []).includes(vio.id);
+                                        return (
+                                          <label
+                                            key={vio.id}
+                                            className={`inline-flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
+                                              checked
+                                                ? 'border-blue-600 bg-blue-50 text-blue-900'
+                                                : 'border-slate-200 bg-slate-50 text-slate-600'
+                                            }`}
+                                          >
+                                            <input
+                                              type="checkbox"
+                                              checked={checked}
+                                              onChange={(e) => {
+                                                const curr = item.linkedViolationIds || [];
+                                                const next = e.target.checked
+                                                  ? [...curr, vio.id]
+                                                  : curr.filter((x) => x !== vio.id);
+                                                const nextCausalStatus: CausalLinkStatus =
+                                                  e.target.checked &&
+                                                  (!item.causalLinkStatus ||
+                                                    item.causalLinkStatus === 'unspecified')
+                                                    ? 'multiple_mixed'
+                                                    : item.causalLinkStatus || 'unspecified';
+                                                onSaveLegalItem({
+                                                  ...item,
+                                                  causalLinkStatus: nextCausalStatus,
+                                                  linkedViolationIds: next,
+                                                });
+                                              }}
+                                              className="h-3 w-3 accent-blue-700"
+                                            />
+                                            <span className="font-mono-tabular">{vio.id}</span>
+                                            <span className="max-w-[140px] truncate">
+                                              ({vio.subjectId}
+                                              {vio.conclusionLabel ? ` · ${vio.conclusionLabel}` : ''})
+                                            </span>
+                                          </label>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>
@@ -1349,13 +1445,13 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               补录认定原因并关联
                             </button>
                           </div>
-                          {prioritizedCauses.length === 0 ? (
+                          {scopedCauses.primaryItems.length === 0 ? (
                             <span className="text-xs text-slate-400">
-                              暂无认定原因记录，若文书认定有责可点击右上「补录认定原因并关联」
+                              当前主体 {item.subjectId} 暂无认定原因记录，若文书认定有责可点击右上「补录认定原因并关联」
                             </span>
                           ) : (
                             <div className="flex flex-wrap gap-1.5">
-                              {prioritizedCauses.map((cau) => {
+                              {scopedCauses.primaryItems.map((cau) => {
                                 const checked = (item.linkedCauseIds || []).includes(cau.id);
                                 return (
                                   <label
@@ -1386,6 +1482,60 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                                   </label>
                                 );
                               })}
+                            </div>
+                          )}
+                          {scopedCauses.otherItems.length > 0 && (
+                            <div className="mt-1.5 border-t border-slate-100 pt-1">
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setExpandedCrossSubjectMap((prev) => ({
+                                    ...prev,
+                                    [`${item.id}:cau`]: !prev[`${item.id}:cau`],
+                                  }));
+                                }}
+                                className="text-[11px] font-medium text-slate-500 hover:text-slate-800 hover:underline"
+                              >
+                                {isCrossCauExpanded
+                                  ? '收起其他主体原因记录'
+                                  : `显示其他主体原因 (+${scopedCauses.otherItems.length})`}
+                              </button>
+                              {isCrossCauExpanded && (
+                                <div className="mt-1 flex flex-wrap gap-1.5">
+                                  {scopedCauses.otherItems.map((cau) => {
+                                    const checked = (item.linkedCauseIds || []).includes(cau.id);
+                                    return (
+                                      <label
+                                        key={cau.id}
+                                        className={`inline-flex cursor-pointer items-center gap-1 rounded border px-1.5 py-0.5 text-xs ${
+                                          checked
+                                            ? 'border-blue-600 bg-blue-50 text-blue-900'
+                                            : 'border-slate-200 bg-slate-50 text-slate-600'
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={checked}
+                                          onChange={(e) => {
+                                            const curr = item.linkedCauseIds || [];
+                                            const next = e.target.checked
+                                              ? [...curr, cau.id]
+                                              : curr.filter((x) => x !== cau.id);
+                                            onSaveLegalItem({ ...item, linkedCauseIds: next });
+                                          }}
+                                          className="h-3 w-3 accent-blue-700"
+                                        />
+                                        <span className="font-mono-tabular">{cau.id}</span>
+                                        <span className="max-w-[160px] truncate">
+                                          ({cau.subjectId}
+                                          {cau.conclusionLabel ? ` · ${cau.conclusionLabel}` : ''})
+                                        </span>
+                                      </label>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </div>
                           )}
                         </div>

@@ -138,6 +138,7 @@ export function validateLegalConclusion(
   context?: {
     entities?: EntityItem[];
     supplements?: VocabularySupplementItem[];
+    allLegalConclusions?: LegalConclusionItem[];
   },
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -210,6 +211,19 @@ export function validateLegalConclusion(
     });
   }
 
+  if (item.category === 'liability' && item.subjectId && context?.allLegalConclusions) {
+    const sameSubjectLiabilities = context.allLegalConclusions.filter(
+      (l) => l.category === 'liability' && l.subjectId === item.subjectId,
+    );
+    if (sameSubjectLiabilities.length > 1) {
+      issues.push({
+        code: 'DUPLICATE_SUBJECT_LIABILITY',
+        severity: 'error',
+        message: `主体 ${item.subjectId} 存在 ${sameSubjectLiabilities.length} 条责任划分记录（每个责任主体仅允许保留一条责任划分）`,
+      });
+    }
+  }
+
   return issues;
 }
 
@@ -280,7 +294,11 @@ export function computeCaseReadiness(
     if (PRESENCE_STATUS_META[l.presenceStatus].blocksScoring) {
       blockingPresenceCount += 1;
     }
-    const issues = validateLegalConclusion(l, { entities: caseDoc.entities, supplements });
+    const issues = validateLegalConclusion(l, {
+      entities: caseDoc.entities,
+      supplements,
+      allLegalConclusions: caseDoc.legalConclusions,
+    });
     validationErrors += issues.filter((i) => i.severity === 'error').length;
   }
 
@@ -763,6 +781,7 @@ export function collectCaseWorkItems(
     const errors = validateLegalConclusion(l, {
       entities: caseDoc.entities,
       supplements,
+      allLegalConclusions: caseDoc.legalConclusions,
     }).filter((i) => i.severity === 'error');
     const isBlockingPresence = PRESENCE_STATUS_META[l.presenceStatus].blocksScoring;
     const hasBlockingOrError = isBlockingPresence || errors.length > 0;
@@ -1325,15 +1344,677 @@ export function extractPdfParagraphMatches(
   return results;
 }
 
-const WFXW_NARRATIVE_KEYWORDS: Record<string, string[]> = {
-  行经人行横道未停车让行: ['行经人行横道', '未停车让行', '未减速行驶', '礼让行人', '通过人行横道'],
-  未按操作规范安全驾驶: ['未按操作规范', '操作规范安全驾驶', '未注意观察'],
-  开关车门妨碍其他车辆通行: ['开关车门', '开启车门', '开启左前车门', '开启右车门', '开车门'],
-  低能见度未开灯降速: ['低能见度', '未按规定开启雾灯', '未开灯', '降低行驶速度', '团雾'],
-  未保持安全车距: ['未保持安全车距', '安全车距', '安全距离', '未与前车保持安全距离'],
-  违规连续变更车道: ['连续变更', '连续变道', '违规变道', '变更车道'],
-  超速行驶: ['超速行驶', '超速', '超过限速', '超过规定时速'],
-  无违法行为: ['无违法行为', '无违法及过错', '无交通违法'],
+interface WfxwMatchRule {
+  /** Direct violation phrases (checked with negation guard unless already negative-phrased) */
+  phrases?: string[];
+  /** Phrases that only count when negation guard is skipped (because they already express non-compliance like 未按...) */
+  obligationFailures?: string[];
+  /** Statutory article clues that map cleanly to this violation */
+  articles?: string[];
+  /** Co-occurring condition check when single phrase alone is ambiguous */
+  pairedCheck?: (
+    compactText: string,
+    item: LegalConclusionItem,
+    subjectEntity?: EntityItem,
+  ) => string | null;
+}
+
+const NEGATION_BEFORE_RE = /(?:未|无|没有|并未|尚未|不构成|未发现|未见|未曾|不存在|并非|免|已)(?:按规定|经|曾|在)?$/;
+const NOT_IN_SPACE_BEFORE_RE = /(?:未在|不在|未沿|未于)$/;
+const NEGATED_FAILURE_BEFORE_RE = /(?:并非|不存在|没有|未发现)$/;
+
+function hasPositiveOccurrence(
+  compactText: string,
+  rawNeedle: string,
+  options?: {
+    checkNegation?: boolean;
+    forbidLeadingChars?: string[];
+    forbidBeforeRe?: RegExp;
+    forbidAfterRe?: RegExp;
+  },
+): boolean {
+  const needle = rawNeedle.replace(/\s+/g, '').toLowerCase();
+  if (!needle) return false;
+
+  const isSelfNegative = /^(?:未|无|没有|不按|不得|非|违|禁|超载|超员|超速)/.test(needle)
+    ? !/^超(?:速|载|员)/.test(needle)
+    : false;
+  const checkNeg = options?.checkNegation ?? !isSelfNegative;
+
+  let fromIdx = 0;
+  while (fromIdx <= compactText.length - needle.length) {
+    const idx = compactText.indexOf(needle, fromIdx);
+    if (idx === -1) return false;
+    fromIdx = idx + 1;
+
+    const prevChar = idx > 0 ? compactText[idx - 1] : '';
+    if (options?.forbidLeadingChars?.includes(prevChar)) {
+      continue;
+    }
+
+    const before = compactText.slice(Math.max(0, idx - 8), idx);
+    const after = compactText.slice(idx + needle.length, idx + needle.length + 8);
+
+    if (options?.forbidBeforeRe && options.forbidBeforeRe.test(before)) {
+      continue;
+    }
+    if (options?.forbidAfterRe && options.forbidAfterRe.test(after)) {
+      continue;
+    }
+
+    if (checkNeg) {
+      if (NEGATION_BEFORE_RE.test(before)) {
+        continue;
+      }
+    } else if (/^(?:未|无|不)/.test(needle) && NEGATED_FAILURE_BEFORE_RE.test(before)) {
+      continue;
+    }
+
+    return true;
+  }
+
+  return false;
+}
+
+function hasAnyPositivePhrase(
+  compactText: string,
+  phrases: string[],
+  options?: {
+    checkNegation?: boolean;
+    forbidLeadingChars?: string[];
+    forbidBeforeRe?: RegExp;
+    forbidAfterRe?: RegExp;
+  },
+): string | null {
+  for (const phrase of phrases) {
+    if (hasPositiveOccurrence(compactText, phrase, options)) {
+      return phrase;
+    }
+  }
+  return null;
+}
+
+const WFXW_MATCH_RULES: Record<string, WfxwMatchRule> = {
+  未按操作规范安全驾驶: {
+    obligationFailures: [
+      '未按操作规范安全驾驶',
+      '未按照操作规范安全驾驶',
+      '未能按照操作规范安全驾驶',
+      '未按操作规范驾驶',
+      '未按照操作规范驾驶',
+      '未按操作规范',
+      '未按照操作规范',
+      '不按操作规范',
+      '违反操作规范',
+      '未注意观察',
+      '疏于观察',
+      '观察不周',
+      '未仔细观察',
+      '未确保安全',
+      '未能确保安全',
+      '未保证安全',
+      '临危措施不当',
+      '操作不当',
+      '未安全文明驾驶',
+      '未尽安全注意义务',
+    ],
+    articles: ['第二十二条第一款'],
+  },
+  行经人行横道未停车让行: {
+    obligationFailures: [
+      '行经人行横道未停车让行',
+      '行经人行横道未减速让行',
+      '通过人行横道未停车让行',
+      '通过人行横道未减速',
+      '遇行人正在通过人行横道未停车让行',
+      '未停车让行',
+      '未礼让行人',
+      '不礼让行人',
+      '未避让行人',
+      '未避让横过道路的行人',
+    ],
+    articles: ['第四十七条'],
+    pairedCheck: (compactText) => {
+      const hasCrosswalk = hasPositiveOccurrence(compactText, '人行横道', {
+        checkNegation: false,
+        forbidLeadingChars: ['非'],
+      });
+      if (!hasCrosswalk) return null;
+      const failAct = hasAnyPositivePhrase(compactText, [
+        '未减速',
+        '未停车',
+        '未让行',
+        '未避让',
+        '碰撞行人',
+        '撞击行人',
+        '撞伤行人',
+        '未礼让',
+      ]);
+      return failAct ? `人行横道+${failAct}` : null;
+    },
+  },
+  开关车门妨碍其他车辆通行: {
+    phrases: [
+      '开关车门妨碍',
+      '开关车门影响',
+      '开启车门妨碍',
+      '打开车门妨碍',
+      '开启左前车门',
+      '开启右车门',
+      '开车门未注意',
+      '开车门撞',
+      '开关车门不得妨碍',
+    ],
+    articles: ['第六十三条第（四）项', '第六十三条第(四)项', '第六十三条第四项'],
+  },
+  低能见度未开灯降速: {
+    obligationFailures: [
+      '低能见度未开灯',
+      '低能见度气象条件未按规定降速',
+      '未按规定开启雾灯',
+      '低能见度未降低行驶速度',
+      '团雾未减速',
+      '团雾未开灯',
+      '能见度低未开灯',
+      '能见度低未降速',
+    ],
+    pairedCheck: (compactText) => {
+      const env = hasAnyPositivePhrase(compactText, [
+        '低能见度',
+        '浓雾',
+        '团雾',
+        '雾天',
+        '能见度低于',
+        '第八十一条',
+      ]);
+      if (!env) return null;
+      const failAct = hasAnyPositivePhrase(
+        compactText,
+        ['未开灯', '未按规定开启', '未降低行驶速度', '未减速', '未降速'],
+        { checkNegation: false },
+      );
+      return failAct ? `${env}+${failAct}` : null;
+    },
+  },
+  未保持安全车距: {
+    obligationFailures: [
+      '未保持安全车距',
+      '未保持安全距离',
+      '未保持安全间距',
+      '未保持安全跟车距离',
+      '未保持足以采取紧急制动措施的安全距离',
+      '未与前车保持',
+      '未能与前车保持',
+      '没有与前车保持',
+      '未按规定保持车距',
+      '跟车距离过近',
+      '安全距离不足',
+      '安全车距不足',
+    ],
+    pairedCheck: (compactText) => {
+      const context = hasAnyPositivePhrase(compactText, ['第四十三条', '同车道行驶', '追尾']);
+      const dist = hasAnyPositivePhrase(
+        compactText,
+        ['安全距离', '安全车距', '安全间距', '紧急制动措施'],
+        { checkNegation: false },
+      );
+      if (context && dist && !/(?:已保持|保持了)安全/.test(compactText)) {
+        return `${context}+${dist}`;
+      }
+      return null;
+    },
+  },
+  违规连续变更车道: {
+    phrases: [
+      '违规连续变更车道',
+      '连续变更两条',
+      '连续变更车道',
+      '连续变道',
+      '一次连续变更',
+    ],
+  },
+  违法变更车道: {
+    phrases: [
+      '违法变更车道',
+      '违规变更车道',
+      '违规变道',
+      '强行变道',
+      '强行并线',
+      '压实线变道',
+      '变更车道时影响',
+      '变更车道影响',
+      '变更车道未让',
+      '变道不得影响',
+      '变道影响正常行驶',
+      '变道未让',
+    ],
+    articles: ['实施条例第四十四条第二款', '实施条例》第四十四条第二款'],
+    pairedCheck: (compactText) => {
+      const hasLaneChange = hasAnyPositivePhrase(compactText, ['变更车道', '变道']);
+      if (!hasLaneChange) return null;
+      const badEffect = hasAnyPositivePhrase(
+        compactText,
+        ['影响', '妨碍', '未让', '不得', '第四十四条'],
+        { checkNegation: false },
+      );
+      return badEffect ? `${hasLaneChange}+${badEffect}` : null;
+    },
+  },
+  超速行驶: {
+    phrases: [
+      '超速行驶',
+      '超过限速',
+      '超过规定时速',
+      '超过最高限速',
+      '超过限定时速',
+      '超速运行',
+      '超速违法',
+      '超速',
+    ],
+  },
+  违反交通信号灯通行: {
+    phrases: [
+      '违反交通信号灯',
+      '不按交通信号灯',
+      '违反信号灯',
+      '闯红灯',
+      '红灯亮时继续通行',
+      '未按交通信号',
+      '违反交通信号通行',
+      '违反交通信号',
+    ],
+    pairedCheck: (compactText) => {
+      const sig = hasAnyPositivePhrase(compactText, ['交通信号灯', '信号灯', '红灯']);
+      if (!sig) return null;
+      const act = hasAnyPositivePhrase(compactText, ['违反', '未按', '不按', '闯', '抢行'], {
+        checkNegation: false,
+      });
+      return act ? `${sig}+${act}` : null;
+    },
+  },
+  '违反禁令标志、禁止标线指示': {
+    phrases: [
+      '违反禁令标志',
+      '违反禁止标线',
+      '压实线',
+      '跨越实线',
+      '跨越双黄线',
+      '违反标志标线',
+      '不按导向标线',
+      '无视禁令标志',
+    ],
+  },
+  未按规定让行: {
+    obligationFailures: [
+      '未按规定让行',
+      '未按规定礼让',
+      '未让行',
+      '未让优先通行',
+      '转弯的机动车未让直行',
+      '转弯机动车未让直行',
+      '转弯未让直行',
+      '左转未让直行',
+      '右转未让直行',
+      '未让直行的车辆',
+      '未让直行车辆',
+      '支路未让干路',
+      '未让右方道路的来车',
+      '未让右方道路来车',
+      '未让右方来车',
+      '进入路口未让',
+      '借道通行未让',
+      '进出道路未让',
+      '会车未让',
+      '未靠右让行',
+      '未让正常行驶的车辆先行',
+      '妨碍直行车辆',
+    ],
+    pairedCheck: (compactText) => {
+      const art = hasAnyPositivePhrase(compactText, ['第五十一条', '第五十二条']);
+      if (!art) return null;
+      const clue = hasAnyPositivePhrase(compactText, ['让', '转弯', '右方', '先行'], {
+        checkNegation: false,
+      });
+      return clue ? `${art}+${clue}` : null;
+    },
+  },
+  不按规定车道行驶: {
+    phrases: [
+      '不按规定车道行驶',
+      '未按规定车道行驶',
+      '不按规定车道',
+      '未按规定车道',
+      '占用非机动车道',
+      '在非机动车道内行驶',
+      '未在机动车道内行驶',
+      '未在机动车道行驶',
+      '占用机动车道',
+      '占用应急车道',
+      '在应急车道内行驶',
+      '不按导向车道',
+      '未按导向车道',
+      '未靠道路右侧通行',
+      '未靠右侧通行',
+      '借用对向车道',
+      '借道行驶',
+    ],
+  },
+  逆向行驶: {
+    phrases: ['逆向行驶', '逆向通行', '驶入对向车道', '逆行'],
+    articles: ['第三十五条'],
+  },
+  违法超车: {
+    phrases: [
+      '违法超车',
+      '违规超车',
+      '强行超车',
+      '从前车右侧超车',
+      '右侧超车',
+      '超车时未保持',
+      '超车时妨碍',
+      '不具备超车条件',
+      '禁止超车路段超车',
+    ],
+    pairedCheck: (compactText) => {
+      const overtake = hasPositiveOccurrence(compactText, '超车', { checkNegation: true });
+      if (!overtake) return null;
+      const fail = hasAnyPositivePhrase(
+        compactText,
+        ['违规', '违法', '强行', '禁止', '妨碍', '右侧', '未保持', '未确保', '第四十三条'],
+        { checkNegation: false },
+      );
+      return fail ? `超车+${fail}` : null;
+    },
+  },
+  违法掉头: {
+    phrases: [
+      '违法掉头',
+      '违规掉头',
+      '掉头时妨碍',
+      '掉头妨碍正常行驶',
+      '掉头未让',
+      '禁止掉头',
+      '掉头未确保安全',
+      '转弯掉头未确保安全',
+    ],
+    pairedCheck: (compactText) => {
+      if (hasPositiveOccurrence(compactText, '掉头') && hasPositiveOccurrence(compactText, '第四十九条')) {
+        return '掉头+第四十九条';
+      }
+      return null;
+    },
+  },
+  违法倒车: {
+    phrases: [
+      '违法倒车',
+      '违规倒车',
+      '倒车未查明车后情况',
+      '倒车时未确保安全',
+      '倒车未注意',
+      '倒车撞',
+    ],
+    pairedCheck: (compactText) => {
+      if (hasPositiveOccurrence(compactText, '倒车') && hasPositiveOccurrence(compactText, '第五十条')) {
+        return '倒车+第五十条';
+      }
+      return null;
+    },
+  },
+  违法停放或临时停车妨碍通行: {
+    phrases: [
+      '违反规定停放',
+      '违法停车',
+      '违章停车',
+      '违规停放',
+      '违规停车',
+      '违法停放',
+      '临时停车妨碍',
+    ],
+    pairedCheck: (compactText) => {
+      if (hasPositiveOccurrence(compactText, '开关车门', { checkNegation: false })) {
+        return null;
+      }
+      const park = hasAnyPositivePhrase(compactText, ['停放', '临时停车', '停车']);
+      if (!park) return null;
+      const illegal = hasAnyPositivePhrase(
+        compactText,
+        ['违反规定', '禁止停车', '妨碍其他车辆和行人', '第五十六条', '第六十三条'],
+        { checkNegation: false },
+      );
+      return illegal ? `${park}+${illegal}` : null;
+    },
+  },
+  '故障停车未按规定设警示/开警示灯': {
+    obligationFailures: [
+      '未按规定设置警告标志',
+      '未设置警告标志',
+      '未摆放警示标志',
+      '未放置三角警示牌',
+      '未开启危险报警闪光灯',
+      '未按规定开启危险报警闪光灯',
+      '发生故障未按规定',
+    ],
+  },
+  未按规定使用灯光: {
+    obligationFailures: [
+      '未按规定使用灯光',
+      '未按规定开启灯光',
+      '未开启前照灯',
+      '未开启车灯',
+      '未开灯',
+      '违规使用远光灯',
+      '不按规定使用远光灯',
+      '夜间未开启灯光',
+      '未按规定开启雾灯',
+    ],
+    phrases: ['灯光不符合要求', '使用远光灯'],
+  },
+  饮酒或醉酒后驾驶机动车: {
+    phrases: [
+      '饮酒后驾驶',
+      '酒后驾驶',
+      '酒驾',
+      '醉酒后驾驶',
+      '醉酒驾驶',
+      '醉驾',
+      '血液中酒精含量',
+    ],
+  },
+  无证或准驾车型不符驾驶: {
+    phrases: [
+      '未取得机动车驾驶证',
+      '无证驾驶',
+      '无有效机动车驾驶证',
+      '驾驶证被暂扣',
+      '驾驶证被吊销',
+      '与准驾车型不符',
+      '准驾车型不符',
+      '准驾不符',
+    ],
+    pairedCheck: (compactText) => {
+      if (
+        hasPositiveOccurrence(compactText, '第十九条') &&
+        hasAnyPositivePhrase(compactText, ['驾驶证', '准驾'], { checkNegation: false })
+      ) {
+        return '第十九条+驾驶证';
+      }
+      return null;
+    },
+  },
+  驾驶安全设施不全或机件不合格车辆: {
+    phrases: [
+      '安全设施不全',
+      '机件不符合技术标准',
+      '制动不合格',
+      '制动系统不合格',
+      '转向不合格',
+      '车辆安全技术检验不合格',
+      '未按规定进行安全技术检验',
+      '逾期未检验',
+    ],
+    pairedCheck: (compactText) => {
+      if (
+        hasPositiveOccurrence(compactText, '第二十一条') &&
+        hasAnyPositivePhrase(compactText, ['安全设施', '机件', '技术标准'], {
+          checkNegation: false,
+        })
+      ) {
+        return '第二十一条+机件安全';
+      }
+      return null;
+    },
+  },
+  超载或超员行驶: {
+    phrases: [
+      '超过核定载质量',
+      '超过核定载人数',
+      '超载',
+      '超员',
+      '超限运输',
+      '载物超宽',
+      '载物超高',
+      '载物超长',
+    ],
+  },
+  发生交通事故后逃逸: {
+    phrases: [
+      '发生交通事故后逃逸',
+      '交通肇事逃逸',
+      '驾车逃逸',
+      '逃离事故现场',
+      '弃车逃逸',
+      '肇事逃逸',
+      '逃逸',
+    ],
+    pairedCheck: (compactText) => {
+      if (
+        hasPositiveOccurrence(compactText, '第七十条') &&
+        hasPositiveOccurrence(compactText, '逃', { checkNegation: false })
+      ) {
+        return '第七十条+逃逸';
+      }
+      return null;
+    },
+  },
+  非机动车违反规定通行: {
+    phrases: [
+      '非机动车未在非机动车道内行驶',
+      '电动自行车未在非机动车道',
+      '非机动车在机动车道内行驶',
+      '非机动车逆行',
+      '电动自行车逆行',
+      '非机动车违反交通信号',
+      '横过机动车道未下车推行',
+      '未佩戴安全头盔',
+      '非机动车违反规定载人',
+      '电动自行车违法载人',
+    ],
+    pairedCheck: (compactText, _item, subjectEntity) => {
+      const subjHint = `${subjectEntity?.roleLabel || ''}${subjectEntity?.subtitle || ''}${subjectEntity?.label || ''}`;
+      const isNonMotor =
+        /(非机动车|电动自行车|自行车|骑行|电动车)/.test(subjHint) ||
+        /(驾驶非机动车|骑行非机动车|骑行电动自行车|驾驶电动自行车|驾驶自行车)/.test(
+          compactText,
+        );
+      if (!isNonMotor) return null;
+      const act = hasAnyPositivePhrase(
+        compactText,
+        [
+          '未在非机动车道',
+          '机动车道内行驶',
+          '逆行',
+          '逆向行驶',
+          '闯红灯',
+          '违反交通信号',
+          '未下车推行',
+          '违反规定载人',
+          '第五十七条',
+          '第五十八条',
+        ],
+        { checkNegation: false },
+      );
+      return act ? `非机动车+${act}` : null;
+    },
+  },
+  行人违反交通规则通行: {
+    phrases: [
+      '行人违反交通信号',
+      '行人未走人行道',
+      '行人未走人行横道',
+      '行人不走过街设施',
+      '行人横穿',
+      '非人行横道横穿',
+      '跨越道路隔离设施',
+      '翻越护栏',
+      '行人横过道路未确认安全',
+      '在车行道内行走',
+    ],
+    pairedCheck: (compactText, _item, subjectEntity) => {
+      const subjHint = `${subjectEntity?.roleLabel || ''}${subjectEntity?.subtitle || ''}`;
+      if (subjHint && /(驾驶人|车主)/.test(subjHint) && !/行人/.test(subjHint)) {
+        return null;
+      }
+      const hasPed = hasPositiveOccurrence(compactText, '行人', {
+        forbidBeforeRe: /(?:未礼让|不礼让|碰撞|撞击|撞伤|其他车辆和)$/,
+      });
+      if (!hasPed) return null;
+      const act = hasAnyPositivePhrase(
+        compactText,
+        [
+          '未走人行道',
+          '未走人行横道',
+          '未确认安全',
+          '违反交通信号',
+          '跨越',
+          '翻越',
+          '车行道内',
+          '第六十一条',
+          '第六十二条',
+          '第六十三条',
+        ],
+        { checkNegation: false },
+      );
+      return act ? `行人+${act}` : null;
+    },
+  },
+};
+
+const VIOLATION_AUXILIARY_VOCAB_FIELDS = new Set([
+  'D05.F027',
+  'D05.F028',
+  'D05.F029',
+  'D05.F074',
+  'D05.F075',
+  'D08.F048',
+]);
+
+const AUXILIARY_TERM_GUARDS: Record<
+  string,
+  {
+    forbidLeadingChars?: string[];
+    forbidBeforeRe?: RegExp;
+    forbidAfterRe?: RegExp;
+  }
+> = {
+  机动车道: {
+    forbidLeadingChars: ['非'],
+    forbidBeforeRe: NOT_IN_SPACE_BEFORE_RE,
+  },
+  人行横道: {
+    forbidLeadingChars: ['非'],
+    forbidBeforeRe: NOT_IN_SPACE_BEFORE_RE,
+  },
+  直行: {
+    forbidBeforeRe: /(?:未让|让|避让|非)$/,
+    forbidAfterRe: /^(?:的?车辆|的?机动车|的?非机动车|方)/,
+  },
+  正常行驶: {
+    forbidBeforeRe: /(?:影响|妨碍|其他车辆|未|不能|没有)$/,
+    forbidAfterRe: /^(?:的?车辆|的?机动车|的?非机动车|车辆)/,
+  },
+  开启危险报警闪光灯: {
+    forbidBeforeRe: /(?:未|未按规定|没有|并未|尚未|不|应|应当)$/,
+  },
 };
 
 const ENTITY_ALIAS_STOPWORDS = new Set([
@@ -1346,11 +2027,24 @@ const ENTITY_ALIAS_STOPWORDS = new Set([
   '机动车',
   '小型普通客车',
   '小型轿车',
+  '小型客车',
   '电动自行车',
+  '电动车',
+  '电动三轮车',
+  '二轮摩托车',
+  '重型货车',
+  '货车',
+  '轿车',
   '事故',
   '车辆',
   '道路',
+  '路段',
+  '车行道',
+  '人行道',
+  '机动车道',
+  '非机动车道',
   '路口',
+  '交叉路口',
   '无号牌',
   '第一阶段',
   '第二阶段',
@@ -1443,6 +2137,7 @@ export function scanViolationLinkMatches(
   const compactText = combinedText.replace(/\s+/g, '').toLowerCase();
   if (!compactText) return emptyResult;
 
+  const subjectEntity = entities.find((e) => e.id === item.subjectId);
   const linkedVocabSet = new Set(item.linkedVocabTerms || []);
   const linkedEntitySet = new Set(item.linkedEntityIds || []);
   const vocabMatches: ViolationVocabMatch[] = [];
@@ -1459,18 +2154,43 @@ export function scanViolationLinkMatches(
   );
 
   for (const term of primaryTerms) {
-    if (term === '无违法行为' && item.presenceStatus === 'present' && !compactText.includes('无违法')) {
-      continue;
-    }
+    if (term === '无违法行为') continue;
+
     const compactTerm = term.replace(/\s+/g, '').toLowerCase();
     let matchedBy = '';
-    if (compactText.includes(compactTerm)) {
+
+    if (item.conclusionLabel.trim() === term) {
+      matchedBy = term;
+    } else if (hasPositiveOccurrence(compactText, compactTerm)) {
       matchedBy = term;
     } else {
-      const keywords = WFXW_NARRATIVE_KEYWORDS[term] || [];
-      const hitKw = keywords.find((kw) => compactText.includes(kw.replace(/\s+/g, '').toLowerCase()));
-      if (hitKw) matchedBy = hitKw;
+      const rule = WFXW_MATCH_RULES[term];
+      if (rule) {
+        if (!matchedBy && rule.obligationFailures?.length) {
+          const hit = hasAnyPositivePhrase(compactText, rule.obligationFailures, {
+            checkNegation: false,
+          });
+          if (hit) matchedBy = hit;
+        }
+        if (!matchedBy && rule.phrases?.length) {
+          const hit = hasAnyPositivePhrase(compactText, rule.phrases, {
+            checkNegation: true,
+          });
+          if (hit) matchedBy = hit;
+        }
+        if (!matchedBy && rule.pairedCheck) {
+          const hit = rule.pairedCheck(compactText, item, subjectEntity);
+          if (hit) matchedBy = hit;
+        }
+        if (!matchedBy && rule.articles?.length && item.presenceStatus === 'present') {
+          const artHit = hasAnyPositivePhrase(compactText, rule.articles, {
+            forbidBeforeRe: /(?:未违反|不构成违反|没有违反)$/,
+          });
+          if (artHit) matchedBy = artHit;
+        }
+      }
     }
+
     if (matchedBy) {
       const vocabKey = `D10.F058:${term}`;
       if (!seenVocabKeys.has(vocabKey)) {
@@ -1490,9 +2210,49 @@ export function scanViolationLinkMatches(
     }
   }
 
-  // 2. Scan supplementary controlled vocabularies (actions, runtime states, road space, etc.)
+  // Only match 无违法行为 when explicitly negative OR no affirmative D10.F058 violation matched
+  if (primaryTerms.includes('无违法行为')) {
+    const hasAffirmativeViolation = vocabMatches.some((m) => m.isPrimaryStandard);
+    const hasExplicitNoVioPhrase =
+      /(?:无违法行为|无违法及过错|无交通违法|未发现违法行为|不构成交通违法)/.test(compactText) &&
+      !/(?:并非无违法|不是无违法)/.test(compactText);
+    if (
+      item.presenceStatus === 'explicit_negative' ||
+      (!hasAffirmativeViolation && hasExplicitNoVioPhrase)
+    ) {
+      const vocabKey = 'D10.F058:无违法行为';
+      if (!seenVocabKeys.has(vocabKey)) {
+        seenVocabKeys.add(vocabKey);
+        vocabMatches.push({
+          vocabKey,
+          fieldCode: 'D10.F058',
+          fieldName: violationDef?.fieldName || '认定违法行为',
+          codeTable: violationDef?.existingCodeTable || 'wfxw',
+          standardTerm: '无违法行为',
+          matchedBy:
+            item.presenceStatus === 'explicit_negative' && !hasExplicitNoVioPhrase
+              ? '明确否定状态 (explicit_negative)'
+              : '无违法行为',
+          isPrimaryStandard: true,
+          isLinked:
+            item.conclusionLabel.trim() === '无违法行为' || linkedVocabSet.has(vocabKey),
+        });
+      }
+    }
+  }
+
+  // 2. Scan scoped behavioral/spatial/collision controlled vocabularies (G04 actions/state/space & G07 collision mode)
+  const subjectRoleText = `${subjectEntity?.roleLabel || ''} ${subjectEntity?.subtitle || ''}`;
+  const isKnownNonPedestrian =
+    /(?:驾驶人|车主)/.test(subjectRoleText) && !/行人/.test(subjectRoleText);
+
   for (const sup of supplements) {
-    if (sup.fieldCode === 'D10.F058') continue;
+    if (!VIOLATION_AUXILIARY_VOCAB_FIELDS.has(sup.fieldCode)) continue;
+    if (sup.fieldCode === 'D05.F029' && isKnownNonPedestrian) {
+      // Pedestrian action vocabulary (including 逆行) must not pollute motor-vehicle driver records
+      continue;
+    }
+
     const termPool = Array.from(
       new Set([
         ...sup.candidateOptions,
@@ -1504,19 +2264,37 @@ export function scanViolationLinkMatches(
           : []),
       ]),
     );
+
     for (const candidate of sup.candidateOptions) {
       const compactCand = candidate.replace(/\s+/g, '').toLowerCase();
       if (compactCand.length < 2) continue;
+
+      if (
+        sup.fieldCode === 'D05.F029' &&
+        candidate === '逆行' &&
+        /(?:驾驶机动车|驾驶电动|骑行电动|驾驶汽车|轿车|货车|客车)/.test(compactText) &&
+        !/行人/.test(compactText)
+      ) {
+        continue;
+      }
+
+      const guard = AUXILIARY_TERM_GUARDS[candidate];
       let matchedBy = '';
-      if (compactText.includes(compactCand)) {
+      if (hasPositiveOccurrence(compactText, compactCand, guard)) {
         matchedBy = candidate;
       } else {
         const synHit = termPool.find((syn) => {
           const cs = syn.replace(/\s+/g, '').toLowerCase();
-          return cs.length >= 3 && cs !== compactCand && compactText.includes(cs) && candidate.includes(syn.slice(0, 2));
+          return (
+            cs.length >= 3 &&
+            cs !== compactCand &&
+            candidate.includes(syn.slice(0, 2)) &&
+            hasPositiveOccurrence(compactText, cs, guard)
+          );
         });
         if (synHit) matchedBy = synHit;
       }
+
       if (matchedBy) {
         const vocabKey = `${sup.fieldCode}:${candidate}`;
         if (!seenVocabKeys.has(vocabKey)) {
@@ -1535,6 +2313,9 @@ export function scanViolationLinkMatches(
       }
     }
   }
+
+  // Always list primary D10.F058 wfxw matches ahead of auxiliary D05/D08 matches
+  vocabMatches.sort((a, b) => Number(b.isPrimaryStandard) - Number(a.isPrimaryStandard));
 
   // 3. Scan current case entity list
   const entityMatches: ViolationEntityMatch[] = [];
@@ -1793,6 +2574,93 @@ export function stepVocabHighlightIndex(
   if (currentIndex <= 0 || currentIndex >= totalCount) return totalCount - 1;
   return currentIndex - 1;
 }
+
+export interface ScopedLegalCandidateList {
+  primaryItems: LegalConclusionItem[];
+  otherItems: LegalConclusionItem[];
+}
+
+export function getScopedViolationCandidatesForCause(
+  causeItem: Pick<LegalConclusionItem, 'subjectId' | 'linkedViolationIds'>,
+  allViolations: LegalConclusionItem[],
+): ScopedLegalCandidateList {
+  const linkedSet = new Set(causeItem.linkedViolationIds || []);
+  const sameSubject: LegalConclusionItem[] = [];
+  const foreignLinked: LegalConclusionItem[] = [];
+  const otherItems: LegalConclusionItem[] = [];
+
+  for (const vio of allViolations) {
+    if (vio.subjectId === causeItem.subjectId) {
+      sameSubject.push(vio);
+    } else if (linkedSet.has(vio.id)) {
+      foreignLinked.push(vio);
+    } else {
+      otherItems.push(vio);
+    }
+  }
+
+  return {
+    primaryItems: [...sameSubject, ...foreignLinked],
+    otherItems,
+  };
+}
+
+export function getScopedCauseCandidatesForLiability(
+  liabilityItem: Pick<LegalConclusionItem, 'subjectId' | 'linkedCauseIds'>,
+  allCauses: LegalConclusionItem[],
+): ScopedLegalCandidateList {
+  const linkedSet = new Set(liabilityItem.linkedCauseIds || []);
+  const sameSubject: LegalConclusionItem[] = [];
+  const foreignLinked: LegalConclusionItem[] = [];
+  const otherItems: LegalConclusionItem[] = [];
+
+  for (const cau of allCauses) {
+    if (cau.subjectId === liabilityItem.subjectId) {
+      sameSubject.push(cau);
+    } else if (linkedSet.has(cau.id)) {
+      foreignLinked.push(cau);
+    } else {
+      otherItems.push(cau);
+    }
+  }
+
+  return {
+    primaryItems: [...sameSubject, ...foreignLinked],
+    otherItems,
+  };
+}
+
+export function getSubjectLiabilityRecords(
+  legalConclusions: LegalConclusionItem[],
+  subjectId: string,
+): LegalConclusionItem[] {
+  if (!subjectId) return [];
+  return legalConclusions.filter(
+    (l) => l.category === 'liability' && l.subjectId === subjectId,
+  );
+}
+
+export function pickDefaultLiabilitySubjectId(
+  subjects: Pick<EntityItem, 'id'>[],
+  legalConclusions: LegalConclusionItem[],
+  preferredSubjectId?: string,
+): string | null {
+  const liabledSet = new Set(
+    legalConclusions
+      .filter((l) => l.category === 'liability' && l.subjectId)
+      .map((l) => l.subjectId),
+  );
+  if (
+    preferredSubjectId &&
+    subjects.some((s) => s.id === preferredSubjectId) &&
+    !liabledSet.has(preferredSubjectId)
+  ) {
+    return preferredSubjectId;
+  }
+  const available = subjects.find((s) => !liabledSet.has(s.id));
+  return available ? available.id : null;
+}
+
 
 
 

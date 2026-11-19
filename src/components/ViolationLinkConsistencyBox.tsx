@@ -125,6 +125,15 @@ export const ViolationLinkConsistencyBox: React.FC<ViolationLinkConsistencyBoxPr
                 className="flex flex-wrap items-center justify-between gap-2 rounded border border-red-200/80 bg-white px-2.5 py-1.5"
               >
                 <div className="flex flex-wrap items-center gap-1.5">
+                  <span
+                    className={`rounded border px-1.5 py-0.5 text-[11px] font-medium ${
+                      m.isPrimaryStandard
+                        ? 'border-blue-200 bg-blue-50 text-blue-800'
+                        : 'border-slate-200 bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    {m.isPrimaryStandard ? '违法词表' : '辅助词表'}
+                  </span>
                   <span className="font-mono-tabular font-semibold text-slate-800">
                     {m.fieldCode}
                   </span>

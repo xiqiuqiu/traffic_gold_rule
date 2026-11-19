@@ -1,10 +1,21 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, RotateCcw, Upload } from 'lucide-react';
+import {
+  AlertCircle,
+  BookOpen,
+  CheckCircle2,
+  Loader2,
+  RotateCcw,
+  Settings,
+  Sparkles,
+  Upload,
+  X,
+} from 'lucide-react';
 import { AcceptanceExportPanel } from './components/AcceptanceExportPanel';
 import { EntityRegistryBar } from './components/EntityRegistryBar';
 import { FieldAnnotationPanel } from './components/FieldAnnotationPanel';
 import { LegalRelationsPanel } from './components/LegalRelationsPanel';
 import { ManualDrawer } from './components/ManualDrawer';
+import { ModelSettingsPanel } from './components/ModelSettingsPanel';
 import { PdfEvidenceViewer } from './components/PdfEvidenceViewer';
 import { VocabularySupplementPanel } from './components/VocabularySupplementPanel';
 import {
@@ -34,8 +45,21 @@ import {
   generateNextEntityId,
   validateFieldRecord,
 } from './utils/goldRules';
+import {
+  AiMergeMode,
+  AiPreanalyzeMergeResult,
+  AiPreanalyzePayload,
+  buildAiSchemaCatalogPayload,
+  mapAiExtractionToCaseDraft,
+} from './utils/aiPreanalyze';
+import {
+  AiProviderSettings,
+  getActiveModelSummary,
+  loadAiProviderSettings,
+  saveAiProviderSettings,
+} from './utils/aiSettings';
 
-type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export';
+type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export' | 'settings';
 
 const STORAGE_CASES_KEY = 'gold_workbench_cases_v3';
 const STORAGE_SUPPLEMENTS_KEY = 'gold_workbench_supplements_v1';
@@ -92,12 +116,25 @@ export default function App() {
     Array<{ page: number; quote: string; label?: string }>
   >([]);
   const [manualOpen, setManualOpen] = useState<boolean>(false);
+  const [aiPanelOpen, setAiPanelOpen] = useState<boolean>(false);
+  const [aiMergeMode, setAiMergeMode] = useState<AiMergeMode>('merge_missing');
+  const [aiRunning, setAiRunning] = useState<boolean>(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiLastResult, setAiLastResult] = useState<
+    (Omit<AiPreanalyzeMergeResult, 'nextCase'> & { caseId: string }) | null
+  >(null);
+  const [aiSettings, setAiSettings] = useState<AiProviderSettings>(loadAiProviderSettings);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeCase = useMemo(
     () => cases.find((c) => c.caseId === activeCaseId) || cases[0],
     [cases, activeCaseId],
+  );
+
+  const activeModelSummary = useMemo(
+    () => getActiveModelSummary(aiSettings),
+    [aiSettings],
   );
 
   // Sync persistence
@@ -118,6 +155,10 @@ export default function App() {
     }
   }, [supplements]);
 
+  useEffect(() => {
+    saveAiProviderSettings(aiSettings);
+  }, [aiSettings]);
+
   // Reset entity selection when switching case
   useEffect(() => {
     if (!activeCase) return;
@@ -129,6 +170,7 @@ export default function App() {
     setFocusedFieldKey(null);
     setFocusedLegalOrRelId(null);
     setHighlightedEvidences([]);
+    setAiError(null);
   }, [activeCaseId]);
 
   useEffect(() => {
@@ -533,7 +575,133 @@ export default function App() {
     setCases((prev) => [...prev, newCase]);
     setActiveCaseId(newId);
     setActiveTab('fields');
+    setAiError(null);
+    setAiLastResult(null);
+    setAiPanelOpen(true);
     e.target.value = '';
+  };
+
+  const arrayBufferToBase64 = (buf: ArrayBuffer): string => {
+    const bytes = new Uint8Array(buf);
+    const chunkSize = 0x8000;
+    const chunks: string[] = [];
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      chunks.push(String.fromCharCode(...bytes.subarray(i, i + chunkSize)));
+    }
+    return btoa(chunks.join(''));
+  };
+
+  const handleRunAiPreanalyze = async () => {
+    if (!activeCase || aiRunning) return;
+    const targetCaseId = activeCase.caseId;
+    setAiPanelOpen(true);
+
+    if (!activeModelSummary.isConfigured) {
+      setAiError(activeModelSummary.issueHint || '请先前往“模型设置”完成接口与模型选择。');
+      return;
+    }
+
+    setAiRunning(true);
+    setAiError(null);
+
+    try {
+      const totalChars = Object.values(pdfPageTexts)
+        .join('')
+        .replace(/\s+/g, '').length;
+
+      let pdfBase64: string | undefined;
+      if (aiSettings.provider === 'gemini' && totalChars < 40 && activeCase.pdfUrl) {
+        const pdfRes = await fetch(activeCase.pdfUrl);
+        if (pdfRes.ok) {
+          const buf = await pdfRes.arrayBuffer();
+          pdfBase64 = arrayBufferToBase64(buf);
+        }
+      }
+
+      const providerConfig =
+        aiSettings.provider === 'openai_compatible'
+          ? {
+              provider: 'openai_compatible' as const,
+              baseUrl: aiSettings.openai.baseUrl,
+              apiKey: aiSettings.openai.apiKey,
+              model: aiSettings.openai.selectedModel,
+            }
+          : { provider: 'gemini' as const };
+
+      const fetchController = new AbortController();
+      const clientTimeoutId = window.setTimeout(() => {
+        fetchController.abort(new Error('timeout'));
+      }, 250_000);
+
+      let response: Response;
+      try {
+        response = await fetch('/api/ai/preanalyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: fetchController.signal,
+          body: JSON.stringify({
+            caseId: activeCase.caseId,
+            sourceFilename: activeCase.sourceFilename,
+            pageCount: activeCase.pageCount,
+            pageTexts: pdfPageTexts,
+            pdfBase64,
+            schemaCatalog: buildAiSchemaCatalogPayload(supplements),
+            providerConfig,
+          }),
+        });
+      } finally {
+        window.clearTimeout(clientTimeoutId);
+      }
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.error === 'string' && data.error
+            ? data.error
+            : `AI 预分析请求失败 (${response.status})`,
+        );
+      }
+
+      const aiPayload = data as AiPreanalyzePayload;
+      const actorLabel =
+        aiSettings.provider === 'openai_compatible'
+          ? `OpenAI 兼容 (${aiSettings.openai.selectedModel})`
+          : 'Gemini AI 预分析';
+
+      const baseCase = cases.find((c) => c.caseId === targetCaseId) || activeCase;
+      const merged = mapAiExtractionToCaseDraft(baseCase, aiPayload, {
+        supplements,
+        mergeMode: aiMergeMode,
+        actorRole: userRole,
+        actorLabel,
+      });
+      const { nextCase, ...summaryStats } = merged;
+
+      setCases((prevList) =>
+        prevList.map((item) => (item.caseId === targetCaseId ? nextCase : item)),
+      );
+
+      setAiLastResult({
+        caseId: targetCaseId,
+        ...summaryStats,
+      });
+      setActiveTab('fields');
+      if (summaryStats.createdFieldsCount + summaryStats.updatedDraftFieldsCount > 0) {
+        setFieldBucketRequest({ bucket: 'draft', nonce: Date.now() });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      const isTimeout =
+        (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) ||
+        /timeout|aborted/i.test(msg);
+      setAiError(
+        isTimeout
+          ? '模型响应超时，请重试或前往“模型设置”切换响应更快的模型。'
+          : msg || 'AI 预分析失败，请稍后重试',
+      );
+    } finally {
+      setAiRunning(false);
+    }
   };
 
   const handleResetDemo = () => {
@@ -563,6 +731,7 @@ export default function App() {
               ['legal', '法律与关系'],
               ['vocab', '受控词表增补'],
               ['export', '交付验收与导出'],
+              ['settings', '模型设置'],
             ] as Array<[WorkspaceTab, string]>
           ).map(([tabKey, label]) => (
             <button
@@ -627,6 +796,20 @@ export default function App() {
           >
             <Upload className="h-3.5 w-3.5" aria-hidden="true" />
             导入本地 PDF
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setAiPanelOpen((v) => !v)}
+            aria-expanded={aiPanelOpen}
+            className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium transition-colors ${
+              aiPanelOpen
+                ? 'bg-blue-50 text-blue-800'
+                : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
+            }`}
+          >
+            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+            AI 预分析
           </button>
 
           <div className="flex items-center gap-0.5 rounded-md bg-slate-200/70 p-0.5">
@@ -727,6 +910,124 @@ export default function App() {
               <span className="text-slate-600">{USER_ROLE_META[userRole].badgeText}</span>
             </div>
           </div>
+
+          {aiPanelOpen && (
+            <section
+              aria-label="AI 预分析模块"
+              className="border-b border-slate-200 bg-white px-5 py-3"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+                  <Sparkles className="h-4 w-4 shrink-0 text-blue-700" aria-hidden="true" />
+                  <span className="font-semibold text-slate-900">AI 预分析初稿提取</span>
+                  <span aria-hidden="true" className="text-slate-300">
+                    ·
+                  </span>
+                  <span className="truncate text-slate-600" title={activeCase.sourceFilename}>
+                    {activeCase.sourceFilename}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-300">
+                    ·
+                  </span>
+                  <span className="font-mono-tabular text-slate-700">
+                    {activeModelSummary.providerLabel}：{activeModelSummary.modelName}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('settings')}
+                    className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-blue-700 hover:underline"
+                  >
+                    <Settings className="h-3 w-3" aria-hidden="true" />
+                    切换/配置模型
+                  </button>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    aria-label="AI 预分析写入策略"
+                    value={aiMergeMode}
+                    onChange={(e) => setAiMergeMode(e.target.value as AiMergeMode)}
+                    disabled={aiRunning}
+                    className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-800"
+                  >
+                    <option value="merge_missing">仅补充空白字段（保留现有标注）</option>
+                    <option value="overwrite_drafts">覆盖未复核草稿（保留已复核/裁定）</option>
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={handleRunAiPreanalyze}
+                    disabled={aiRunning}
+                    className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-blue-400"
+                  >
+                    {aiRunning ? (
+                      <>
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                        正在提取初稿…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                        开始提取初稿
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    type="button"
+                    aria-label="收起 AI 预分析模块"
+                    onClick={() => setAiPanelOpen(false)}
+                    className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              {aiError && (
+                <div
+                  role="alert"
+                  className="mt-2.5 flex items-start gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800"
+                >
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>{aiError}</span>
+                </div>
+              )}
+
+              {aiLastResult && aiLastResult.caseId === activeCase.caseId && !aiError && (
+                <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-700" aria-hidden="true" />
+                    <span className="font-medium text-slate-900">{aiLastResult.summaryText}</span>
+                    <span aria-hidden="true" className="text-slate-300">
+                      ·
+                    </span>
+                    <span className="font-mono-tabular">
+                      新增对象 {aiLastResult.addedEntitiesCount} / 新建字段{' '}
+                      {aiLastResult.createdFieldsCount} / 更新草稿{' '}
+                      {aiLastResult.updatedDraftFieldsCount} / 校验通过{' '}
+                      {aiLastResult.validDraftCount} / 待核对 {aiLastResult.errorDraftCount}
+                    </span>
+                    {aiLastResult.skippedProtectedFieldsCount > 0 && (
+                      <span className="text-slate-500">
+                        （已保留 {aiLastResult.skippedProtectedFieldsCount} 条已有/已复核字段）
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActiveTab('fields');
+                      setFieldBucketRequest({ bucket: 'draft', nonce: Date.now() });
+                    }}
+                    className="whitespace-nowrap font-medium text-blue-700 hover:underline"
+                  >
+                    查看草稿队列 →
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
 
           {activeTab === 'fields' && (
             <>
@@ -830,6 +1131,20 @@ export default function App() {
                 updateActiveCase((prev) => ({ ...prev, maskPiiOnExport: mask }))
               }
               onBatchApproveDrafts={handleBatchApproveDrafts}
+            />
+          )}
+
+          {activeTab === 'settings' && (
+            <ModelSettingsPanel
+              settings={aiSettings}
+              onChangeSettings={(next) => {
+                setAiSettings(next);
+                setAiError(null);
+              }}
+              onJumpToPreanalyze={() => {
+                setActiveTab('fields');
+                setAiPanelOpen(true);
+              }}
             />
           )}
         </div>

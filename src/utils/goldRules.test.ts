@@ -19,9 +19,13 @@ import {
   filterWorkItems,
   findTextMatchRanges,
   generateNextEntityId,
+  getScopedCauseCandidatesForLiability,
+  getScopedViolationCandidatesForCause,
+  getSubjectLiabilityRecords,
   maskPiiText,
   matchesFieldRecordBucket,
   normalizePdfTextForDisplay,
+  pickDefaultLiabilitySubjectId,
   scanViolationLinkMatches,
   sortLegalConclusionsByChain,
   splitPdfPageIntoParagraphs,
@@ -750,6 +754,221 @@ test('stepVocabHighlightIndex wraps cleanly on next/prev arrow navigation', () =
   assert.equal(stepVocabHighlightIndex(2, 3, 'prev'), 1);
   assert.equal(stepVocabHighlightIndex(-1, 3, 'prev'), 2);
 });
+
+test('scanViolationLinkMatches rejects negated/opposite substrings and matches real-world D10.F058 wfxw violations accurately', () => {
+  const entities = [
+    { id: 'ACC', kind: 'ACC' as const, label: '测试事故' },
+    { id: 'P01', kind: 'P' as const, label: '王某', roleLabel: '机动车驾驶人' },
+    { id: 'P02', kind: 'P' as const, label: '李某', roleLabel: '行人' },
+    { id: 'V01', kind: 'V' as const, label: '京A12345', subtitle: '小型轿车' },
+  ];
+
+  // Case 1: Driver on 非机动车道, 逆向行驶, 未按照操作规范安全驾驶, 经鉴定未超速, 未开启危险报警闪光灯
+  const vioReal: LegalConclusionItem = {
+    id: 'VIO-AI-72',
+    category: 'violation',
+    subjectId: 'P01',
+    eventId: '',
+    presenceStatus: 'present',
+    rawText:
+      '王某驾驶机动车占用非机动车道逆向行驶，未按照操作规范安全驾驶、文明驾驶，未按规定开启危险报警闪光灯，经鉴定未超速行驶。',
+    lawArticle: '《中华人民共和国道路交通安全法》第二十二条第一款、第三十五条、第三十七条',
+    conclusionLabel: '',
+    evidences: [{ id: 'EV-72', page: 1, quote: '王某驾驶机动车占用非机动车道逆向行驶' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+
+  const scanReal = scanViolationLinkMatches(vioReal, entities, INITIAL_VOCABULARY_SUPPLEMENTS);
+  const terms = scanReal.vocabMatches.map((m) => `${m.fieldCode}:${m.standardTerm}`);
+
+  // Must match actual D10.F058 violations
+  assert.ok(terms.includes('D10.F058:未按操作规范安全驾驶'));
+  assert.ok(terms.includes('D10.F058:逆向行驶'));
+  assert.ok(terms.includes('D10.F058:不按规定车道行驶'));
+  assert.ok(terms.includes('D10.F058:故障停车未按规定设警示/开警示灯'));
+  assert.ok(terms.includes('D05.F075:非机动车道'));
+
+  // Primary D10.F058 matches must be sorted before auxiliary vocab matches
+  assert.equal(scanReal.vocabMatches[0].isPrimaryStandard, true);
+
+  // Must NOT falsely match opposite/negated/cross-domain items
+  assert.equal(terms.includes('D05.F075:机动车道'), false);
+  assert.equal(terms.includes('D10.F058:超速行驶'), false);
+  assert.equal(terms.includes('D05.F027:超速行驶'), false);
+  assert.equal(terms.includes('D05.F074:超速运行'), false);
+  assert.equal(terms.includes('D05.F074:开启危险报警闪光灯'), false);
+  assert.equal(terms.includes('D05.F029:逆行'), false);
+  assert.equal(terms.includes('D03.F015:行人'), false);
+
+  // Case 2: Turning driver failing to yield to straight vehicle / traffic signal / statutory phrasing
+  const vioYield: LegalConclusionItem = {
+    id: 'VIO-AI-73',
+    category: 'violation',
+    subjectId: 'P01',
+    eventId: '',
+    presenceStatus: 'present',
+    rawText: '王某驾驶机动车违反交通信号灯通行，转弯的机动车未让直行的车辆先行，影响其他车辆正常行驶。',
+    lawArticle: '《中华人民共和国道路交通安全法》第三十八条',
+    conclusionLabel: '',
+    evidences: [{ id: 'EV-73', page: 1, quote: '违反交通信号灯通行' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+  const scanYield = scanViolationLinkMatches(vioYield, entities, INITIAL_VOCABULARY_SUPPLEMENTS);
+  const yieldTerms = scanYield.vocabMatches.map((m) => `${m.fieldCode}:${m.standardTerm}`);
+  assert.ok(yieldTerms.includes('D10.F058:违反交通信号灯通行'));
+  assert.ok(yieldTerms.includes('D10.F058:未按规定让行'));
+  assert.equal(yieldTerms.includes('D05.F027:直行'), false);
+  assert.equal(yieldTerms.includes('D05.F074:正常行驶'), false);
+
+  // Case 3: Highway 未减速行驶 without crosswalk must NOT trigger 行经人行横道未停车让行, and combined text mentioning other party 无违法行为 must NOT add 无违法行为 to violator
+  const vioHighway: LegalConclusionItem = {
+    id: 'VIO-AI-74',
+    category: 'violation',
+    subjectId: 'P01',
+    eventId: '',
+    presenceStatus: 'present',
+    rawText: '王某在高速公路未减速行驶且未与前车保持足以采取紧急制动措施的安全距离追尾前车；前车驾驶人无违法行为。',
+    lawArticle: '《中华人民共和国道路交通安全法》第四十三条',
+    conclusionLabel: '',
+    evidences: [{ id: 'EV-74', page: 1, quote: '未与前车保持足以采取紧急制动措施的安全距离' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+  const scanHighway = scanViolationLinkMatches(
+    vioHighway,
+    entities,
+    INITIAL_VOCABULARY_SUPPLEMENTS,
+  );
+  const highwayTerms = scanHighway.vocabMatches.map((m) => `${m.fieldCode}:${m.standardTerm}`);
+  assert.ok(highwayTerms.includes('D10.F058:未保持安全车距'));
+  assert.equal(highwayTerms.includes('D10.F058:行经人行横道未停车让行'), false);
+  assert.equal(highwayTerms.includes('D10.F058:无违法行为'), false);
+});
+
+test('getScopedViolationCandidatesForCause and getScopedCauseCandidatesForLiability isolate same-subject items and preserve multiple violations for one party', () => {
+  const mkLegal = (
+    id: string,
+    category: 'violation' | 'cause' | 'liability',
+    subjectId: string,
+    extra: Partial<LegalConclusionItem> = {},
+  ): LegalConclusionItem => ({
+    id,
+    category,
+    subjectId,
+    eventId: 'E01',
+    presenceStatus: 'present',
+    rawText: `${id} 原文`,
+    lawArticle: '',
+    conclusionLabel: '',
+    evidences: [{ id: `EV-${id}`, page: 1, quote: `${id} 摘录` }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+    ...extra,
+  });
+
+  const violations = [
+    mkLegal('VIO-01', 'violation', 'P01', { conclusionLabel: '超速行驶' }),
+    mkLegal('VIO-02', 'violation', 'P01', { conclusionLabel: '未按规定让行' }),
+    mkLegal('VIO-03', 'violation', 'P02', { conclusionLabel: '逆向行驶' }),
+    mkLegal('VIO-04', 'violation', 'P03', { conclusionLabel: '违法停车' }),
+  ];
+
+  // P01 cause must see BOTH of P01's violations, and NOT P02/P03 in primaryItems
+  const causeP01 = mkLegal('CAU-01', 'cause', 'P01', { linkedViolationIds: ['VIO-01'] });
+  const scopedVios = getScopedViolationCandidatesForCause(causeP01, violations);
+  assert.deepEqual(
+    scopedVios.primaryItems.map((v) => v.id),
+    ['VIO-01', 'VIO-02'],
+  );
+  assert.deepEqual(
+    scopedVios.otherItems.map((v) => v.id),
+    ['VIO-03', 'VIO-04'],
+  );
+
+  // If a cause explicitly linked a cross-subject violation previously, preserve it in primaryItems
+  const mixedCause = mkLegal('CAU-MIX', 'cause', 'P01', { linkedViolationIds: ['VIO-03'] });
+  const scopedMixed = getScopedViolationCandidatesForCause(mixedCause, violations);
+  assert.deepEqual(
+    scopedMixed.primaryItems.map((v) => v.id),
+    ['VIO-01', 'VIO-02', 'VIO-03'],
+  );
+  assert.deepEqual(
+    scopedMixed.otherItems.map((v) => v.id),
+    ['VIO-04'],
+  );
+
+  const causes = [
+    mkLegal('CAU-01', 'cause', 'P01', { conclusionLabel: '主要原因' }),
+    mkLegal('CAU-02', 'cause', 'P02', { conclusionLabel: '次要原因' }),
+    mkLegal('CAU-03', 'cause', 'P03', { conclusionLabel: '无因果关系' }),
+  ];
+  const liaP01 = mkLegal('LIA-01', 'liability', 'P01', {
+    conclusionLabel: '主要责任',
+    linkedCauseIds: ['CAU-01'],
+  });
+  const scopedCauses = getScopedCauseCandidatesForLiability(liaP01, causes);
+  assert.deepEqual(
+    scopedCauses.primaryItems.map((c) => c.id),
+    ['CAU-01'],
+  );
+  assert.deepEqual(
+    scopedCauses.otherItems.map((c) => c.id),
+    ['CAU-02', 'CAU-03'],
+  );
+});
+
+test('single liability per subject helpers pick un-liabled subjects and flag duplicate subject liabilities', () => {
+  const subjects = [
+    { id: 'P01' },
+    { id: 'P02' },
+    { id: 'P03' },
+  ];
+  const lia1: LegalConclusionItem = {
+    id: 'LIA-01',
+    category: 'liability',
+    subjectId: 'P01',
+    eventId: '',
+    presenceStatus: 'present',
+    rawText: 'P01 负全部责任',
+    lawArticle: '',
+    conclusionLabel: '全部责任',
+    linkedCauseIds: [],
+    evidences: [{ id: 'EV-1', page: 1, quote: 'P01 负全部责任' }],
+    reviewStatus: 'draft',
+    disputeReason: '',
+    adjudicatorNote: '',
+  };
+
+  assert.equal(getSubjectLiabilityRecords([lia1], 'P01').length, 1);
+  assert.equal(getSubjectLiabilityRecords([lia1], 'P02').length, 0);
+  assert.equal(pickDefaultLiabilitySubjectId(subjects, [lia1], 'P01'), 'P02');
+  assert.equal(pickDefaultLiabilitySubjectId(subjects, [lia1], 'P03'), 'P03');
+
+  const allThree: LegalConclusionItem[] = [
+    lia1,
+    { ...lia1, id: 'LIA-02', subjectId: 'P02' },
+    { ...lia1, id: 'LIA-03', subjectId: 'P03' },
+  ];
+  assert.equal(pickDefaultLiabilitySubjectId(subjects, allThree), null);
+
+  // Duplicate P01 liability triggers DUPLICATE_SUBJECT_LIABILITY error
+  const dup = { ...lia1, id: 'LIA-DUP', subjectId: 'P01' };
+  const dupIssues = validateLegalConclusion(dup, {
+    allLegalConclusions: [lia1, dup],
+  });
+  assert.equal(
+    dupIssues.some((i) => i.code === 'DUPLICATE_SUBJECT_LIABILITY' && i.severity === 'error'),
+    true,
+  );
+});
+
+
 
 
 

@@ -30,15 +30,21 @@ import {
   WorkItemFilterStatus,
 } from '../types/gold';
 import {
+  buildControlledVocabOptions,
   cleanRelationEntityId,
   extractPdfParagraphMatches,
   findTextMatchRanges,
+  getScopedCauseCandidatesForLiability,
+  getScopedViolationCandidatesForCause,
+  getSubjectLiabilityRecords,
   matchesWorkItemStatus,
+  pickDefaultLiabilitySubjectId,
   sortLegalConclusionsByChain,
   traceLegalEvidenceChain,
   validateLegalConclusion,
   validateRelation,
 } from '../utils/goldRules';
+import { ControlledVocabCombobox } from './ControlledVocabCombobox';
 import { ReviewLifecycleBar, getCardStatusBorderClass } from './ReviewLifecycleBar';
 import { ViolationLinkConsistencyBox } from './ViolationLinkConsistencyBox';
 
@@ -141,14 +147,17 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 }) => {
   const [subTab, setSubTab] = useState<'legal' | 'evidence_chain' | 'relations'>('legal');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | LegalCategory>('ALL');
+  const [subjectFilter, setSubjectFilter] = useState<'ALL' | string>('ALL');
   const [statusFilter, setStatusFilter] = useState<WorkItemFilterStatus>('all');
   const [selectedChainId, setSelectedChainId] = useState<string | null>(null);
   const [showAllParagraphs, setShowAllParagraphs] = useState<boolean>(false);
+  const [expandedCrossSubjectMap, setExpandedCrossSubjectMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (externalFocusRequest) {
       setSubTab(externalFocusRequest.subTab);
       setCategoryFilter('ALL');
+      setSubjectFilter('ALL');
       setStatusFilter('all');
     }
   }, [externalFocusRequest]);
@@ -165,6 +174,10 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   const subjects = caseDoc.entities.filter((e) => e.kind === 'P' || e.kind === 'O');
   const events = caseDoc.entities.filter((e) => e.kind === 'E');
   const allTargets = caseDoc.entities;
+  const effectiveSubjectFilter =
+    subjectFilter === 'ALL' || subjects.some((s) => s.id === subjectFilter)
+      ? subjectFilter
+      : 'ALL';
 
   const violationRecords = caseDoc.legalConclusions.filter((l) => l.category === 'violation');
   const causeRecords = caseDoc.legalConclusions.filter((l) => l.category === 'cause');
@@ -245,10 +258,43 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   };
 
   const handleAddLegal = (category: LegalCategory) => {
+    const preferredSubjectId =
+      effectiveSubjectFilter !== 'ALL' ? effectiveSubjectFilter : subjects[0]?.id || 'P01';
+    let targetSubjectId = preferredSubjectId;
+
+    if (category === 'liability') {
+      const picked = pickDefaultLiabilitySubjectId(
+        subjects,
+        caseDoc.legalConclusions,
+        effectiveSubjectFilter !== 'ALL' ? effectiveSubjectFilter : undefined,
+      );
+      if (effectiveSubjectFilter !== 'ALL') {
+        const existingForSelected = getSubjectLiabilityRecords(
+          caseDoc.legalConclusions,
+          effectiveSubjectFilter,
+        )[0];
+        if (existingForSelected) {
+          onFocusTarget(
+            existingForSelected.id,
+            `${CATEGORY_LABELS.liability.title} (${existingForSelected.id})`,
+          );
+          return;
+        }
+      }
+      if (!picked) {
+        const existing = liabilityRecords[0];
+        if (existing) {
+          onFocusTarget(existing.id, `${CATEGORY_LABELS.liability.title} (${existing.id})`);
+        }
+        return;
+      }
+      targetSubjectId = picked;
+    }
+
     const newItem: LegalConclusionItem = {
       id: `${category === 'violation' ? 'VIO' : category === 'cause' ? 'CAU' : 'LIA'}-${Date.now().toString(36)}`,
       category,
-      subjectId: subjects[0]?.id || 'P01',
+      subjectId: targetSubjectId,
       eventId: events[0]?.id || '',
       presenceStatus: 'present',
       rawText: '',
@@ -299,9 +345,11 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   const categoryFilteredLegal = useMemo(
     () =>
       caseDoc.legalConclusions.filter(
-        (item) => categoryFilter === 'ALL' || item.category === categoryFilter,
+        (item) =>
+          (categoryFilter === 'ALL' || item.category === categoryFilter) &&
+          (effectiveSubjectFilter === 'ALL' || item.subjectId === effectiveSubjectFilter),
       ),
-    [caseDoc.legalConclusions, categoryFilter],
+    [caseDoc.legalConclusions, categoryFilter, effectiveSubjectFilter],
   );
 
   const legalStatusCounts = useMemo(() => {
@@ -320,6 +368,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
         validateLegalConclusion(item, {
           entities: caseDoc.entities,
           supplements,
+          allLegalConclusions: caseDoc.legalConclusions,
         }).some((i) => i.severity === 'error');
       const arg = {
         reviewStatus: item.reviewStatus,
@@ -334,7 +383,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
       if (matchesWorkItemStatus(arg, 'specialist_review')) counts.specialist_review += 1;
     }
     return counts;
-  }, [categoryFilteredLegal, caseDoc.entities, supplements]);
+  }, [categoryFilteredLegal, caseDoc.entities, caseDoc.legalConclusions, supplements]);
 
   const filteredLegal = useMemo(
     () =>
@@ -345,6 +394,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
             validateLegalConclusion(item, {
               entities: caseDoc.entities,
               supplements,
+              allLegalConclusions: caseDoc.legalConclusions,
             }).some((i) => i.severity === 'error');
           return matchesWorkItemStatus(
             {
@@ -356,7 +406,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
           );
         }),
       ),
-    [categoryFilteredLegal, statusFilter, caseDoc.entities, supplements],
+    [categoryFilteredLegal, statusFilter, caseDoc.entities, caseDoc.legalConclusions, supplements],
   );
 
   const relationStatusCounts = useMemo(() => {
@@ -450,17 +500,59 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
         {subTab === 'legal' ? (
           <div className="flex flex-wrap items-center gap-3">
-            {(['violation', 'cause', 'liability'] as LegalCategory[]).map((cat) => (
-              <button
-                key={cat}
-                type="button"
-                onClick={() => handleAddLegal(cat)}
-                className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                新增{CATEGORY_LABELS[cat].title.replace('认定', '').replace('划分', '')}
-              </button>
-            ))}
+            {(['violation', 'cause', 'liability'] as LegalCategory[]).map((cat) => {
+              const selectedExistingLiability =
+                cat === 'liability' && effectiveSubjectFilter !== 'ALL'
+                  ? getSubjectLiabilityRecords(caseDoc.legalConclusions, effectiveSubjectFilter)[0] ||
+                    null
+                  : null;
+              const nextLiabilitySubject =
+                cat === 'liability' && effectiveSubjectFilter === 'ALL'
+                  ? pickDefaultLiabilitySubjectId(subjects, caseDoc.legalConclusions)
+                  : null;
+              const allLiabilitiesFilled =
+                cat === 'liability' &&
+                effectiveSubjectFilter === 'ALL' &&
+                subjects.length > 0 &&
+                nextLiabilitySubject === null;
+              const isExisting = Boolean(selectedExistingLiability) || allLiabilitiesFilled;
+              return (
+                <button
+                  key={cat}
+                  type="button"
+                  title={
+                    selectedExistingLiability
+                      ? `每个责任主体仅允许一条责任划分，点击定位 ${selectedExistingLiability.id}`
+                      : allLiabilitiesFilled
+                        ? '全部参与主体均已建立责任划分（每主体限一条）'
+                        : undefined
+                  }
+                  onClick={() => handleAddLegal(cat)}
+                  className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2.5 py-1.5 text-xs font-medium ${
+                    isExisting
+                      ? 'border border-slate-200 bg-white text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                      : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
+                  }`}
+                >
+                  {selectedExistingLiability ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-700" />
+                      已有责任 ({selectedExistingLiability.id})
+                    </>
+                  ) : allLiabilitiesFilled ? (
+                    <>
+                      <Check className="h-3.5 w-3.5 text-emerald-700" />
+                      已建全部责任
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="h-3.5 w-3.5" />
+                      新增{CATEGORY_LABELS[cat].title.replace('认定', '').replace('划分', '')}
+                    </>
+                  )}
+                </button>
+              );
+            })}
           </div>
         ) : subTab === 'relations' ? (
           <button
@@ -482,24 +574,49 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
       {subTab === 'legal' && (
         <div className="flex flex-col gap-3">
           <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white px-4 pt-3 pb-2">
-            <div className="flex flex-wrap items-center gap-1.5 text-xs">
-              <span className="mr-1 text-slate-500">类别筛选：</span>
-              <div className="inline-flex rounded-md bg-slate-100 p-0.5">
-                {(['ALL', 'violation', 'cause', 'liability'] as const).map((cat) => (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setCategoryFilter(cat)}
-                    className={`whitespace-nowrap rounded px-2.5 py-1 font-medium transition-colors ${
-                      categoryFilter === cat
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {cat === 'ALL' ? '全部' : CATEGORY_LABELS[cat].title}
-                  </button>
-                ))}
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="mr-1 text-slate-500">类别筛选：</span>
+                <div className="inline-flex rounded-md bg-slate-100 p-0.5">
+                  {(['ALL', 'violation', 'cause', 'liability'] as const).map((cat) => (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => setCategoryFilter(cat)}
+                      className={`whitespace-nowrap rounded px-2.5 py-1 font-medium transition-colors ${
+                        categoryFilter === cat
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {cat === 'ALL' ? '全部' : CATEGORY_LABELS[cat].title}
+                    </button>
+                  ))}
+                </div>
               </div>
+              {subjects.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-slate-500">主体筛选：</span>
+                  <select
+                    aria-label="法律结论主体筛选"
+                    value={effectiveSubjectFilter}
+                    onChange={(e) => setSubjectFilter(e.target.value)}
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-800"
+                  >
+                    <option value="ALL">全部主体 ({caseDoc.legalConclusions.length})</option>
+                    {subjects.map((subj) => {
+                      const subjCount = caseDoc.legalConclusions.filter(
+                        (l) => l.subjectId === subj.id,
+                      ).length;
+                      return (
+                        <option key={subj.id} value={subj.id}>
+                          {subj.id} · {subj.label} ({subjCount})
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 pt-2 text-xs">
               <span className="pb-1.5 text-slate-500">状态查询：</span>
@@ -544,6 +661,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
             const issues = validateLegalConclusion(item, {
               entities: caseDoc.entities,
               supplements,
+              allLegalConclusions: caseDoc.legalConclusions,
             });
             const hasError =
               PRESENCE_STATUS_META[item.presenceStatus].blocksScoring ||
@@ -558,16 +676,10 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                   : {}),
               });
             };
-            const prioritizedViolations = [...violationRecords].sort((a, b) => {
-              const aSame = a.subjectId === item.subjectId ? 0 : 1;
-              const bSame = b.subjectId === item.subjectId ? 0 : 1;
-              return aSame - bSame;
-            });
-            const prioritizedCauses = [...causeRecords].sort((a, b) => {
-              const aSame = a.subjectId === item.subjectId ? 0 : 1;
-              const bSame = b.subjectId === item.subjectId ? 0 : 1;
-              return aSame - bSame;
-            });
+            const scopedViolations = getScopedViolationCandidatesForCause(item, violationRecords);
+            const scopedCauses = getScopedCauseCandidatesForLiability(item, causeRecords);
+            const isCrossVioExpanded = !!expandedCrossSubjectMap[`${item.id}:vio`];
+            const isCrossCauExpanded = !!expandedCrossSubjectMap[`${item.id}:cau`];
             const referencingCauses =
               item.category === 'violation'
                 ? causeRecords.filter((c) => (c.linkedViolationIds || []).includes(item.id))
@@ -713,11 +825,18 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                       onChange={(e) => saveEditedLegal({ subjectId: e.target.value })}
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"
                     >
-                      {subjects.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.id} · {s.label}
-                        </option>
-                      ))}
+                      {subjects.map((s) => {
+                        const alreadyHasLiability =
+                          item.category === 'liability' &&
+                          s.id !== item.subjectId &&
+                          getSubjectLiabilityRecords(caseDoc.legalConclusions, s.id).length > 0;
+                        return (
+                          <option key={s.id} value={s.id}>
+                            {s.id} · {s.label}
+                            {alreadyHasLiability ? ' (已有责任划分)' : ''}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
 
@@ -764,21 +883,42 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     <label className="mb-1 block text-xs font-medium text-slate-700">
                       标准结论 (candidate_value)
                     </label>
-                    <input
-                      type="text"
-                      value={item.conclusionLabel}
-                      onChange={(e) =>
-                        saveEditedLegal({ conclusionLabel: e.target.value })
-                      }
-                      placeholder={
+                    {(() => {
+                      const legalFieldCode =
+                        item.category === 'violation'
+                          ? 'D10.F058'
+                          : item.category === 'cause'
+                            ? 'D10.F059'
+                            : 'D10.F060';
+                      const legalDef = MASTER_FIELD_SCHEMA.find(
+                        (f) => f.fieldCode === legalFieldCode,
+                      );
+                      const legalSupp = supplements.find(
+                        (s) => s.fieldCode === legalFieldCode,
+                      );
+                      const legalVocabOptions = legalDef
+                        ? buildControlledVocabOptions(legalDef, legalSupp)
+                        : [];
+                      const legalPlaceholder =
                         item.category === 'liability'
                           ? '全部责任 / 主要责任 / 次要责任 / 无责任'
                           : item.category === 'cause'
                             ? '根本原因 / 全部原因 / 主要原因 / 次要原因'
-                            : '如：未保持安全车距 / 违规连续变道'
-                      }
-                      className="w-full rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900"
-                    />
+                            : '检索标准违法词表或输入自定义结论…';
+                      return (
+                        <ControlledVocabCombobox
+                          compact
+                          ariaLabel={`${item.id} 标准结论`}
+                          options={legalVocabOptions}
+                          selectedValues={item.conclusionLabel ? [item.conclusionLabel] : []}
+                          allowCustomInput
+                          onChangeValues={(vals) =>
+                            saveEditedLegal({ conclusionLabel: vals[0] || '' })
+                          }
+                          placeholder={legalPlaceholder}
+                        />
+                      );
+                    })()}
                   </div>
                 </div>
 
@@ -873,13 +1013,13 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                             补录违法行为并关联
                           </button>
                         </div>
-                        {prioritizedViolations.length === 0 ? (
+                        {scopedViolations.primaryItems.length === 0 ? (
                           <p className="text-xs text-slate-400">
-                            暂无可关联的违法行为记录，可点击右上「补录违法行为并关联」
+                            当前主体 {item.subjectId} 暂无可关联的违法行为记录，可点击右上「补录违法行为并关联」
                           </p>
                         ) : (
                           <div className="flex flex-wrap gap-1.5">
-                            {prioritizedViolations.map((vio) => {
+                            {scopedViolations.primaryItems.map((vio) => {
                               const linked = (item.linkedViolationIds || []).includes(vio.id);
                               return (
                                 <label
@@ -921,6 +1061,69 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                             })}
                           </div>
                         )}
+                        {scopedViolations.otherItems.length > 0 && (
+                          <div className="mt-1.5 border-t border-slate-200/70 pt-1">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedCrossSubjectMap((prev) => ({
+                                  ...prev,
+                                  [`${item.id}:vio`]: !prev[`${item.id}:vio`],
+                                }));
+                              }}
+                              className="text-[11px] font-medium text-slate-500 hover:text-slate-800 hover:underline"
+                            >
+                              {isCrossVioExpanded
+                                ? '收起其他主体违法记录'
+                                : `显示其他主体违法 (+${scopedViolations.otherItems.length})`}
+                            </button>
+                            {isCrossVioExpanded && (
+                              <div className="mt-1 flex flex-wrap gap-1.5">
+                                {scopedViolations.otherItems.map((vio) => {
+                                  const linked = (item.linkedViolationIds || []).includes(vio.id);
+                                  return (
+                                    <label
+                                      key={vio.id}
+                                      className={`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-0.5 text-xs ${
+                                        linked
+                                          ? 'border-blue-600 bg-blue-50 text-blue-900'
+                                          : 'border-slate-200 bg-white text-slate-600'
+                                      }`}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={linked}
+                                        onChange={(e) => {
+                                          const current = item.linkedViolationIds || [];
+                                          const next = e.target.checked
+                                            ? [...current, vio.id]
+                                            : current.filter((x) => x !== vio.id);
+                                          const nextCausalStatus: CausalLinkStatus =
+                                            e.target.checked &&
+                                            (!item.causalLinkStatus ||
+                                              item.causalLinkStatus === 'unspecified')
+                                              ? 'multiple_mixed'
+                                              : item.causalLinkStatus || 'unspecified';
+                                          onSaveLegalItem({
+                                            ...item,
+                                            causalLinkStatus: nextCausalStatus,
+                                            linkedViolationIds: next,
+                                          });
+                                        }}
+                                        className="h-3 w-3 accent-blue-700"
+                                      />
+                                      <span className="font-mono-tabular">{vio.id}</span>
+                                      <span className="max-w-[140px] truncate">
+                                        ({vio.subjectId} · {vio.conclusionLabel || '未填'})
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -942,13 +1145,13 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         补录认定原因并关联
                       </button>
                     </div>
-                    {prioritizedCauses.length === 0 ? (
+                    {scopedCauses.primaryItems.length === 0 ? (
                       <p className="text-xs text-slate-500">
-                        暂无可关联的认定事故原因记录，若文书认定有责可点击右上「补录认定原因并关联」
+                        当前主体 {item.subjectId} 暂无可关联的认定事故原因记录，若文书认定有责可点击右上「补录认定原因并关联」
                       </p>
                     ) : (
                       <div className="flex flex-wrap gap-1.5">
-                        {prioritizedCauses.map((cau) => {
+                        {scopedCauses.primaryItems.map((cau) => {
                           const linked = (item.linkedCauseIds || []).includes(cau.id);
                           return (
                             <label
@@ -978,6 +1181,59 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                             </label>
                           );
                         })}
+                      </div>
+                    )}
+                    {scopedCauses.otherItems.length > 0 && (
+                      <div className="mt-1.5 border-t border-slate-200/70 pt-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedCrossSubjectMap((prev) => ({
+                              ...prev,
+                              [`${item.id}:cau`]: !prev[`${item.id}:cau`],
+                            }));
+                          }}
+                          className="text-[11px] font-medium text-slate-500 hover:text-slate-800 hover:underline"
+                        >
+                          {isCrossCauExpanded
+                            ? '收起其他主体原因记录'
+                            : `显示其他主体原因 (+${scopedCauses.otherItems.length})`}
+                        </button>
+                        {isCrossCauExpanded && (
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {scopedCauses.otherItems.map((cau) => {
+                              const linked = (item.linkedCauseIds || []).includes(cau.id);
+                              return (
+                                <label
+                                  key={cau.id}
+                                  className={`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-0.5 text-xs ${
+                                    linked
+                                      ? 'border-blue-600 bg-blue-50 text-blue-900'
+                                      : 'border-slate-200 bg-white text-slate-600'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={linked}
+                                    onChange={(e) => {
+                                      const current = item.linkedCauseIds || [];
+                                      const next = e.target.checked
+                                        ? [...current, cau.id]
+                                        : current.filter((x) => x !== cau.id);
+                                      onSaveLegalItem({ ...item, linkedCauseIds: next });
+                                    }}
+                                    className="h-3 w-3 accent-blue-700"
+                                  />
+                                  <span className="font-mono-tabular">{cau.id}</span>
+                                  <span className="max-w-[160px] truncate">
+                                    ({cau.subjectId} · {cau.conclusionLabel || '未填'})
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
