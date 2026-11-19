@@ -1800,9 +1800,9 @@ export default function App() {
       )}
 
       {systemView === 'detail' && (
-        <CatalogContext.Provider value={catalogOptions}><main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-12">
+        <CatalogContext.Provider value={catalogOptions}><main className="grid min-h-0 flex-1 grid-cols-1 max-lg:grid-rows-[minmax(0,2fr)_minmax(0,3fr)] lg:grid-cols-12">
           {/* Left Pane: Real PDF Renderer & Evidence Selector */}
-          <div className="min-h-[380px] lg:col-span-5 lg:h-full lg:min-h-0">
+          <div className="min-h-0 min-w-0 lg:col-span-5 lg:h-full">
             <PdfEvidenceViewer
               key={activeCase.pdfUrl}
               pdfUrl={activeCase.pdfUrl}

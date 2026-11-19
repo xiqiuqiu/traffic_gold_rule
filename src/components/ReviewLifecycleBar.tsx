@@ -90,52 +90,12 @@ export const ReviewLifecycleBar: React.FC<ReviewLifecycleBarProps> = ({
     );
   }
 
-  const step2Label = reviewStatus === 'disputed' ? '复核争议' : '复核';
-  const step1Cls =
-    reviewStatus === 'draft' ? 'font-semibold text-slate-900' : 'text-slate-500';
-  const step2Cls =
-    reviewStatus === 'disputed'
-      ? 'font-semibold text-red-700'
-      : reviewStatus === 'checked' || reviewStatus === 'specialist_review'
-        ? 'font-medium text-slate-700'
-        : 'text-slate-300';
-  const step3Cls =
-    reviewStatus === 'specialist_review'
-      ? 'font-semibold text-blue-800'
-      : reviewStatus === 'disputed'
-        ? 'font-medium text-slate-700'
-        : 'text-slate-300';
-
   return (
-    <div className="flex flex-col items-end gap-0.5">
-      <div className="flex flex-wrap items-center gap-3">
-        <span
-          aria-label={`流转阶段：${meta.label}`}
-          className="hidden items-center gap-1 text-xs sm:inline-flex"
-        >
-          <span className={step1Cls}>草稿</span>
-          <span className="text-slate-300" aria-hidden="true">
-            →
-          </span>
-          <span className={step2Cls}>{step2Label}</span>
-          <span className="text-slate-300" aria-hidden="true">
-            →
-          </span>
-          <span className={step3Cls}>裁定</span>
-        </span>
-
-        <span
-          className={`inline-flex items-center gap-1 whitespace-nowrap text-xs font-semibold ${statusMeta.cls}`}
-        >
-          {statusMeta.icon}
-          <span>{statusMeta.label}</span>
-        </span>
-      </div>
-      {hasError && (
-        <span className="text-[11px] font-medium text-red-700">
-          存在必填项或阻断状态待补齐
-        </span>
-      )}
+    <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+      <span title={meta.description} className={`inline-flex items-center gap-1 whitespace-nowrap font-medium ${statusMeta.cls}`}>
+        {statusMeta.icon}{meta.label}
+      </span>
+      {hasError && <span className="text-red-700">待校验</span>}
     </div>
   );
 };

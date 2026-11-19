@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Popover } from '@base-ui/react/popover';
+import { Check, ChevronDown, Plus, Trash2 } from 'lucide-react';
 import { ENTITY_KIND_META } from '../data/schemaCatalog';
 import { EntityItem, EntityKind, EntityProgressSummary } from '../types/gold';
 
@@ -29,6 +30,8 @@ export const EntityRegistryBar: React.FC<EntityRegistryBarProps> = ({
   const [newLabel, setNewLabel] = useState('');
   const [newSubtitle, setNewSubtitle] = useState('');
 
+  const selected = entities.find(entity => entity.id === selectedEntityId);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newLabel.trim()) return;
@@ -39,13 +42,61 @@ export const EntityRegistryBar: React.FC<EntityRegistryBarProps> = ({
   };
 
   return (
-    <div className="border-b border-slate-200 bg-white px-5 pt-4 pb-2.5">
-      <div className="mb-2.5 flex items-center justify-between gap-4">
-        <h2 className="text-sm font-semibold text-slate-900">本案对象</h2>
+    <div className="border-b border-slate-200 bg-white px-4 py-2.5">
+      <div className="flex items-center gap-3">
+        <h2 className="shrink-0 text-xs text-slate-600">本案对象</h2>
+        <Popover.Root>
+          <Popover.Trigger aria-label={`选择本案对象：${selected?.label || selectedEntityId}`} className="inline-flex min-w-0 items-center gap-2 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs hover:bg-slate-50">
+            <span className="font-mono-tabular text-slate-500">{selectedEntityId}</span>
+            <span className="truncate font-medium text-slate-900">{selected?.label}</span>
+            <ChevronDown className="size-3.5 shrink-0 text-slate-500" aria-hidden="true" />
+          </Popover.Trigger>
+          <Popover.Portal>
+            <Popover.Positioner align="start" sideOffset={4} collisionPadding={10} className="z-50">
+              <Popover.Popup aria-label="已登记对象" className="max-h-[min(24rem,var(--available-height))] w-[min(25rem,calc(100vw-1.5rem))] overflow-y-auto rounded-lg border border-slate-200 bg-white p-1.5 shadow-md">
+                {ORDERED_KINDS.map(kind => {
+                  const members = entities.filter(entity => entity.kind === kind);
+                  if (!members.length) return null;
+                  return (
+                    <div key={kind} role="group" aria-label={ENTITY_KIND_META[kind].label}>
+                      <div className="px-2 pb-1 pt-2 text-[11px] font-medium text-slate-500">{ENTITY_KIND_META[kind].label}</div>
+                      {members.map(entity => {
+                        const active = entity.id === selectedEntityId;
+                        const count = recordCountByEntity[entity.id] ?? 0;
+                        const progress = progressByEntity?.[entity.id];
+                        const pending = progress?.pendingCount ?? 0;
+                        const unstarted = progress?.applicableUnstartedCount ?? 0;
+                        return (
+                          <div key={entity.id} className={`flex items-center rounded ${active ? 'bg-slate-100' : 'hover:bg-slate-50'}`}>
+                            <Popover.Close onClick={() => onSelectEntity(entity.id)} aria-current={active || undefined} className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-2 text-left text-xs">
+                              <span className="w-7 shrink-0 font-mono-tabular text-slate-500">{entity.id}</span>
+                              <span className="flex-1 break-words text-slate-900">{entity.label}</span>
+                              <span className="whitespace-nowrap text-[11px] text-slate-500">{count} 项</span>
+                              {pending > 0 ? <span className={`whitespace-nowrap text-[11px] ${progress?.disputedCount ? 'text-red-700' : 'text-amber-700'}`}>待处理 {pending}</span>
+                                : unstarted > 0 ? <span className="whitespace-nowrap text-[11px] text-slate-500">未填 {unstarted}</span>
+                                : count > 0 && <span className="whitespace-nowrap text-[11px] text-emerald-700">已清</span>}
+                              {active && <Check className="size-3.5 shrink-0" aria-hidden="true" />}
+                            </Popover.Close>
+                            {entity.kind !== 'ACC' && (
+                              <button type="button" aria-label={`删除对象 ${entity.id} ${entity.label}`} onClick={() => onRemoveEntity(entity.id)} className="mr-1 rounded p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-700">
+                                <Trash2 className="size-3.5" aria-hidden="true" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </Popover.Popup>
+            </Popover.Positioner>
+          </Popover.Portal>
+        </Popover.Root>
         <button
           type="button"
+          aria-expanded={addingOpen}
           onClick={() => setAddingOpen((v) => !v)}
-          className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+          className="ml-auto inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 hover:text-slate-900"
         >
           <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           登记对象
@@ -55,7 +106,7 @@ export const EntityRegistryBar: React.FC<EntityRegistryBarProps> = ({
       {addingOpen && (
         <form
           onSubmit={handleSubmit}
-          className="mb-3 grid grid-cols-1 gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-12"
+          className="mt-3 grid grid-cols-1 gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-12"
         >
           <div className="sm:col-span-3">
             <label htmlFor="new-entity-kind" className="mb-1 block text-xs font-medium text-slate-700">
@@ -90,7 +141,7 @@ export const EntityRegistryBar: React.FC<EntityRegistryBarProps> = ({
           </div>
           <div className="sm:col-span-3">
             <label htmlFor="new-entity-subtitle" className="mb-1 block text-xs font-medium text-slate-700">
-              主体角色 / 说明 (subjects.role)
+              主体角色 / 说明
             </label>
             <input
               id="new-entity-subtitle"
@@ -104,7 +155,7 @@ export const EntityRegistryBar: React.FC<EntityRegistryBarProps> = ({
           <div className="flex items-end gap-1.5 sm:col-span-2">
             <button
               type="submit"
-              className="w-full whitespace-nowrap rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+              className="w-full whitespace-nowrap rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800"
             >
               确认新增
             </button>
@@ -112,97 +163,6 @@ export const EntityRegistryBar: React.FC<EntityRegistryBarProps> = ({
         </form>
       )}
 
-      {/* Entity selector tabs: clean segmented strip with bottom indicator instead of bordered boxes */}
-      <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="已登记对象列表">
-        {entities.map((entity) => {
-          const isSelected = entity.id === selectedEntityId;
-          const count = recordCountByEntity[entity.id] ?? 0;
-          const prog = progressByEntity?.[entity.id];
-          const pending = prog?.pendingCount ?? 0;
-          const disputed = prog?.disputedCount ?? 0;
-          const unstarted = prog?.applicableUnstartedCount ?? 0;
-
-          return (
-            <div
-              key={entity.id}
-              className={`group flex items-center rounded-md transition-colors ${
-                isSelected
-                  ? 'bg-slate-900 text-white'
-                  : 'bg-slate-100/80 text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
-              }`}
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={isSelected}
-                onClick={() => onSelectEntity(entity.id)}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 text-left text-xs"
-              >
-                <span
-                  className={`font-mono-tabular font-semibold ${
-                    isSelected ? 'text-white' : 'text-slate-900'
-                  }`}
-                >
-                  {entity.id}
-                </span>
-                <span className="max-w-[150px] truncate font-medium">{entity.label}</span>
-                <span
-                  className={`font-mono-tabular ${
-                    isSelected ? 'text-slate-300' : 'text-slate-400'
-                  }`}
-                >
-                  {count}
-                </span>
-                {pending > 0 ? (
-                  <span
-                    className={`font-mono-tabular font-medium ${
-                      isSelected
-                        ? disputed > 0
-                          ? 'text-red-300'
-                          : 'text-amber-300'
-                        : disputed > 0
-                          ? 'text-red-700'
-                          : 'text-amber-700'
-                    }`}
-                  >
-                    · 待{pending}
-                  </span>
-                ) : unstarted > 0 ? (
-                  <span
-                    className={`font-mono-tabular ${
-                      isSelected ? 'text-slate-300' : 'text-slate-500'
-                    }`}
-                  >
-                    · 未填{unstarted}
-                  </span>
-                ) : count > 0 ? (
-                  <span
-                    className={`font-medium ${
-                      isSelected ? 'text-emerald-300' : 'text-emerald-700'
-                    }`}
-                  >
-                    · 已清
-                  </span>
-                ) : null}
-              </button>
-              {entity.kind !== 'ACC' && (
-                <button
-                  type="button"
-                  aria-label={`删除对象 ${entity.id} ${entity.label}`}
-                  onClick={() => onRemoveEntity(entity.id)}
-                  className={`mr-1 rounded p-1 opacity-70 hover:opacity-100 ${
-                    isSelected
-                      ? 'text-slate-300 hover:bg-slate-800 hover:text-red-300'
-                      : 'text-slate-400 hover:bg-red-50 hover:text-red-700'
-                  }`}
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              )}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 };

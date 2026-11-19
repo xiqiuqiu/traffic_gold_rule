@@ -1,3 +1,4 @@
+import { RecordInfo } from './RecordInfo';
 import { useCatalogOptions } from './useCatalogOptions';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -118,10 +119,10 @@ const CATEGORY_LABELS: Record<LegalCategory, { title: string; fieldCode: string;
 };
 
 const CAUSAL_LINK_OPTIONS: Array<{ value: CausalLinkStatus; label: string }> = [
-  { value: 'unspecified', label: '未明确 (unspecified)' },
-  { value: 'explicit_linked', label: '明确关联违法 (explicit_linked)' },
-  { value: 'explicit_unlinked', label: '明确无直接因果 (explicit_unlinked)' },
-  { value: 'multiple_mixed', label: '多因混合 (multiple_mixed)' },
+  { value: 'unspecified', label: '未明确' },
+  { value: 'explicit_linked', label: '明确关联违法' },
+  { value: 'explicit_unlinked', label: '明确无直接因果' },
+  { value: 'multiple_mixed', label: '多因混合' },
 ];
 
 const RELATION_FIELD_CODES = [
@@ -426,7 +427,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
     <div className="flex flex-col gap-4 p-4">
       {/* Sub-navigation */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-3">
-        <div className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-100 p-1">
+        <div className="flex max-w-full items-center gap-1 overflow-x-auto rounded-md bg-slate-100 p-0.5">
           <button
             type="button"
             onClick={() => setSubTab('legal')}
@@ -500,11 +501,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
             <Plus className="h-3.5 w-3.5" />
             新增碰撞 / 事件关系
           </button>
-        ) : (
-          <div className="font-mono-tabular text-xs text-slate-500">
-            点击证据页码可定位到 PDF 原文
-          </div>
-        )}
+        ) : null}
       </div>
 
       {/* Legal Conclusions List */}
@@ -513,12 +510,13 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
           <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-white px-4 pt-3 pb-2">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <div className="flex flex-wrap items-center gap-1.5">
-                <span className="mr-1 text-slate-500">类别筛选：</span>
+                <span className="sr-only">结论类别</span>
                 <div className="inline-flex rounded-md bg-slate-100 p-0.5">
                   {(['ALL', 'violation', 'cause', 'liability'] as const).map((cat) => (
                     <button
                       key={cat}
                       type="button"
+                      aria-pressed={categoryFilter === cat}
                       onClick={() => setCategoryFilter(cat)}
                       className={`whitespace-nowrap rounded px-2.5 py-1 font-medium transition-colors ${
                         categoryFilter === cat
@@ -533,7 +531,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               </div>
               {subjects.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-slate-500">主体筛选：</span>
+
                   <select
                     aria-label="法律结论主体筛选"
                     value={effectiveSubjectFilter}
@@ -556,7 +554,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               )}
             </div>
             <div className="flex flex-wrap items-center gap-4 border-t border-slate-100 pt-2 text-xs">
-              <span className="pb-1.5 text-slate-500">状态查询：</span>
+              <span className="pb-1.5 text-slate-500">审核状态</span>
               {(
                 [
                   ['all', '全部'],
@@ -571,6 +569,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                 <button
                   key={key}
                   type="button"
+                  aria-pressed={statusFilter === key}
                   onClick={() => setStatusFilter(key)}
                   className={`inline-flex items-center gap-1 whitespace-nowrap border-b-2 pb-1.5 transition-colors ${
                     statusFilter === key
@@ -589,7 +588,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
           {filteredLegal.length === 0 && (
             <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-xs text-slate-500">
-              当前筛选下暂无法律结论记录；可切换上方状态或点击右上角按钮新增。
+              没有匹配的法律结论
             </div>
           )}
 
@@ -716,11 +715,8 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               >
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="font-mono-tabular font-semibold text-slate-900">{item.id}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-medium text-blue-800">{catMeta.title}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="font-mono-tabular text-slate-500">{catMeta.fieldCode}</span>
+                    <h3 className="text-sm font-semibold text-slate-900">{catMeta.title}</h3>
+                    <RecordInfo label={`${catMeta.title}的记录信息`} rows={[['记录编号', item.id], ['字段编码', catMeta.fieldCode]]} />
                   </div>
                   <div className="flex items-center gap-2">
                     <button
@@ -797,7 +793,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
                   <div>
                     <label className="mb-1 block text-xs font-medium text-slate-700">
-                      存在性状态 (presence)
+                      存在性状态
                     </label>
                     <select
                       value={item.presenceStatus}
@@ -818,7 +814,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
                   <div>
                     <label className="mb-1 block text-xs font-medium text-slate-700">
-                      标准结论 (candidate_value)
+                      标准结论
                     </label>
                     {(() => {
                       const legalFieldCode =
@@ -864,7 +860,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                   <div className="mt-3 grid grid-cols-1 gap-3 rounded-md border border-slate-200 bg-slate-50/70 p-2.5 sm:grid-cols-12">
                     <div className="sm:col-span-5">
                       <label className="mb-1 block text-xs font-medium text-slate-700">
-                        因果关联状态 (causal_link_status)
+                        因果关联状态
                       </label>
                       <select
                         value={item.causalLinkStatus || 'unspecified'}
@@ -936,7 +932,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                       <div className="sm:col-span-7">
                         <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                           <span className="text-xs font-medium text-slate-700">
-                            关联违法记录 (linked_violation_record_ids)
+                            关联违法记录
                           </span>
                           <button
                             type="button"
@@ -952,7 +948,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         </div>
                         {scopedViolations.primaryItems.length === 0 ? (
                           <p className="text-xs text-slate-400">
-                            当前主体 {item.subjectId} 暂无可关联的违法行为记录，可点击右上「补录违法行为并关联」
+                            当前主体 {item.subjectId} 暂无可关联的违法记录
                           </p>
                         ) : (
                           <div className="flex flex-wrap gap-1.5">
@@ -1068,7 +1064,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                   <div className="mt-3 rounded-md border border-slate-200 bg-slate-50/70 p-2.5">
                     <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-medium text-slate-700">
-                        责任依据的认定原因 (linked_cause_record_ids)
+                        责任依据的认定原因
                       </span>
                       <button
                         type="button"
@@ -1084,7 +1080,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                     {scopedCauses.primaryItems.length === 0 ? (
                       <p className="text-xs text-slate-500">
-                        当前主体 {item.subjectId} 暂无可关联的认定事故原因记录，若文书认定有责可点击右上「补录认定原因并关联」
+                        当前主体 {item.subjectId} 暂无可关联的认定原因
                       </p>
                     ) : (
                       <div className="flex flex-wrap gap-1.5">
@@ -1193,7 +1189,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
                 <div className="mt-3">
                   <label className="mb-1 block text-xs font-medium text-slate-700">
-                    文书原文结论 (raw_value)
+                    文书原文结论
                   </label>
                   <textarea
                     rows={2}
@@ -1221,7 +1217,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                 <div className="mt-3 rounded border border-slate-200 bg-slate-50/60 p-2.5">
                   <div className="mb-1.5 flex items-center justify-between text-xs">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-slate-700">支持证据（页码 + 最短摘录）</span>
+                      <span className="font-medium text-slate-700">证据摘录</span>
                       <LiabilitySourceNote item={item} caseDoc={caseDoc} onLocate={onLocateEvidence} />
                     </div>
                     <button
@@ -1612,7 +1608,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                       <div className="flex items-center gap-2 text-xs">
                         <FileSearch className="h-4 w-4 text-amber-700" aria-hidden="true" />
                         <span className="font-semibold text-slate-900">
-                          关联文档段落（自动筛选并高亮）
+                          关联原文段落
                         </span>
                         <span className="font-mono-tabular text-slate-500">
                           命中 {matchedParagraphs.filter((p) => p.matchedEvidences.length > 0).length} / 共 {matchedParagraphs.length} 段
@@ -1633,7 +1629,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                       </p>
                     ) : visibleParagraphs.length === 0 ? (
                       <div className="rounded border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600">
-                        当前证据摘录未在已提取的 PDF 文本段落中精确命中，可点击右上角「查看全页文档段落」人工核对，或在左侧 PDF 框选原文重新引用。
+                        未精确匹配原文。可查看全页段落，或在 PDF 中重新选取摘录。
                       </div>
                     ) : (
                       <div className="flex flex-col gap-2">
@@ -1799,7 +1795,6 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                         <span className="font-semibold text-slate-900">
                           链路证据引用清单 ({activeChain.evidences.length})
                         </span>
-                        <span className="text-slate-500">点击摘录定位原文</span>
                       </div>
 
                       {activeChain.evidences.length === 0 ? (
@@ -1848,7 +1843,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
       {subTab === 'relations' && (
         <div className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-4 rounded-lg border border-slate-200 bg-white px-4 pt-3 pb-1.5 text-xs">
-            <span className="pb-1.5 text-slate-500">状态查询：</span>
+            <span className="pb-1.5 text-slate-500">审核状态</span>
             {(
               [
                 ['all', '全部'],
@@ -1863,7 +1858,8 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
               <button
                 key={key}
                 type="button"
-                onClick={() => setStatusFilter(key)}
+                aria-pressed={statusFilter === key}
+                  onClick={() => setStatusFilter(key)}
                 className={`inline-flex items-center gap-1 whitespace-nowrap border-b-2 pb-1.5 transition-colors ${
                   statusFilter === key
                     ? 'border-slate-900 font-semibold text-slate-900'
@@ -1880,7 +1876,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
           {filteredRelations.length === 0 && (
             <div className="rounded-lg border border-slate-200 bg-white p-8 text-center text-xs text-slate-500">
-              当前筛选下暂无事件顺序与碰撞关系记录，可切换上方状态或点击右上角「新增碰撞 / 事件关系」。
+              没有匹配的事件关系
             </div>
           )}
 
@@ -1910,7 +1906,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                       <span aria-hidden="true">·</span>
                       <span className="font-mono-tabular text-blue-800">{rel.eventId}</span>
                       <span aria-hidden="true">·</span>
-                      <span className="text-slate-500">{rel.id}</span>
+                      <RecordInfo label="碰撞关系的记录信息" rows={[['记录编号', rel.id]]} />
                     </div>
                     <div className="flex items-center gap-2">
                       <ReviewLifecycleBar
@@ -1935,7 +1931,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                   <div className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
                     <div>
                       <label className="mb-1 block text-xs font-medium text-slate-700">
-                        字段编码 (field_code)
+                        字段编码
                       </label>
                       <select
                         value={rel.fieldCode || 'D08.F049'}
@@ -1951,7 +1947,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                     <div>
                       <label className="mb-1 block text-xs font-medium text-slate-700">
-                        存在性状态 (presence)
+                        存在性状态
                       </label>
                       <select
                         value={rel.presenceStatus || 'present'}
@@ -1972,7 +1968,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                     <div>
                       <label className="mb-1 block text-xs font-medium text-slate-700">
-                        所属阶段事件 (event_id)
+                        所属阶段事件
                       </label>
                       <select
                         value={rel.eventId}
@@ -2008,7 +2004,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                     <div className="sm:col-span-3">
                       <label className="mb-1 block text-xs font-medium text-slate-700">
-                        施动主体 (subject_id)
+                        施动主体
                       </label>
                       <select
                         value={cleanRelationEntityId(rel.sourceId)}
@@ -2024,7 +2020,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                     <div className="sm:col-span-4">
                       <label className="mb-1 block text-xs font-medium text-slate-700">
-                        标准关系类型 (relation_type)
+                        标准关系类型
                       </label>
                       <div className="flex items-center gap-1">
                         <ArrowRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />
@@ -2046,7 +2042,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     </div>
                     <div className="sm:col-span-3">
                       <label className="mb-1 block text-xs font-medium text-slate-700">
-                        受动客体 (object_id)
+                        受动客体
                       </label>
                       <select
                         value={cleanRelationEntityId(rel.targetId)}

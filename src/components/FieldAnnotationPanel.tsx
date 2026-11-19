@@ -1,3 +1,4 @@
+import { RecordInfo } from './RecordInfo';
 import { useCatalogOptions } from './useCatalogOptions';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
@@ -315,7 +316,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="搜索字段编码、名称或码表…"
-                className="w-52 rounded border border-slate-300 bg-white py-1 pr-2.5 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none"
+                className="w-52 max-w-full rounded border border-slate-300 bg-white py-1 pr-2.5 pl-8 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-600 focus:outline-blue-600"
               />
             </div>
 
@@ -328,7 +329,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
               onChange={(e) => setGroupFilter(e.target.value as 'ALL' | GroupCode)}
               className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-800"
             >
-              <option value="ALL">全部普通事实字段组</option>
+              <option value="ALL">全部字段组</option>
               {(['G01', 'G02', 'G03', 'G04', 'G05', 'G06'] as GroupCode[]).map((code) => (
                 <option key={code} value={code}>
                   {GROUP_META[code]}
@@ -337,16 +338,14 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
             </select>
           </div>
 
-          <span className="text-xs text-slate-500">
-            当前主体：<strong className="font-mono-tabular text-slate-900">{selectedEntity.id}</strong>{' '}
-            <span aria-hidden="true">·</span> {selectedEntity.label}{' '}
-            <span aria-hidden="true">·</span> 本主体 {visibleEntityItemsCount}/{bucketCounts.all} 项
-          </span>
+          {visibleEntityItemsCount !== bucketCounts.all && (
+            <span className="text-xs tabular-nums text-slate-500">显示 {visibleEntityItemsCount} / {bucketCounts.all} 项</span>
+          )}
         </div>
 
         {/* Clean Underline Workflow Status Filter Tabs */}
         <div
-          aria-label="按流转完成状态筛选"
+          role="group" aria-label="按流转完成状态筛选"
           className="flex flex-wrap items-center gap-4 border-t border-slate-100 pt-2"
         >
           {(
@@ -367,6 +366,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
               <button
                 key={key}
                 type="button"
+                aria-pressed={isSelected}
                 onClick={() => setStatusBucket(key)}
                 className={`inline-flex items-center gap-1 whitespace-nowrap border-b-2 pb-1.5 text-xs transition-colors ${
                   isSelected
@@ -375,7 +375,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                 }`}
               >
                 <span>{label}</span>
-                <span className="font-mono-tabular text-[11px] opacity-75">({count})</span>
+                <span className="font-mono-tabular text-[11px] opacity-75">{count}</span>
               </button>
             );
           })}
@@ -434,43 +434,14 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
             >
               {/* Field Header */}
               <div className="flex flex-wrap items-start justify-between gap-2 border-b border-slate-100 pb-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
-                    <span className="font-mono-tabular font-semibold text-slate-800">
-                      {def.fieldCode}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span>{def.groupName}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>{def.valueType}</span>
-                    {def.existingCodeTable && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-mono-tabular text-slate-600">
-                          码表 {def.existingCodeTable}
-                        </span>
-                      </>
-                    )}
-                    {supplement && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="text-amber-700">
-                          增补词表 ({supplement.approvalStatus})
-                        </span>
-                      </>
-                    )}
-                  </div>
-                  <h3
-                    className="mt-1 text-[15px] font-semibold text-slate-900"
-                    title={def.statusNote}
-                  >
-                    {def.fieldName}
-                    {def.isSensitivePii && (
-                      <span className="ml-2 text-xs font-normal text-slate-500">
-                        （导出脱敏）
-                      </span>
-                    )}
-                  </h3>
+                <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                  <h3 className="text-sm font-semibold text-slate-900">{def.fieldName}</h3>
+                  <RecordInfo label={`${def.fieldName}的字段信息`} rows={[
+                    ['字段编码', def.fieldCode], ['字段组', def.groupName], ['值类型', def.valueType],
+                    ['码表', def.existingCodeTable], ['字段说明', def.statusNote],
+                  ]} />
+                  {def.isSensitivePii && <span className="text-xs text-slate-500">导出脱敏</span>}
+                  {supplement && <span className="text-xs text-amber-700">增补词表 · {supplement.approvalStatus}</span>}
                 </div>
 
                 {/* Review Lifecycle Stepper + Quick Clear */}
@@ -517,6 +488,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                     return (
                       <button
                         key={statusKey}
+                        aria-pressed={active}
                         type="button"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -542,12 +514,6 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
               {/* Step 5: Values & Evidence (only shown once a status is chosen) */}
               {record && (
                 <div className="mt-3 grid grid-cols-1 gap-3 border-t border-slate-100 pt-3">
-                  {def.isLegalOrRelation && (
-                    <div className="rounded-md border border-amber-200 bg-amber-50/70 px-3 py-2 text-xs text-amber-900">
-                      提示：此字段属于法律结论或碰撞关系，建议优先在顶部「法律与关系」独立面板按主体与事件分条登记。
-                    </div>
-                  )}
-
                   {!presenceRule?.forbidsValue && (
                     <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                       {/* Raw Value */}
@@ -557,7 +523,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                             htmlFor={`raw-${recordKey}`}
                             className="text-xs font-medium text-slate-700"
                           >
-                            原文值（保留文书表达）
+                            原文值
                           </label>
                           {def.fieldCode === 'D02.F007' && accidentDatetimeRecord?.rawValue && (
                             <button
@@ -596,14 +562,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           htmlFor={`norm-${recordKey}`}
                           className="mb-1 block text-xs font-medium text-slate-700"
                         >
-                          人工确认标准值
-                          {vocabOptions.length > 0
-                            ? def.allowMultiple
-                              ? '（词表检索·支持多选）'
-                              : '（词表检索·单选）'
-                            : def.allowMultiple
-                              ? '（支持多选）'
-                              : '（单选/输入）'}
+                          人工确认标准值{def.allowMultiple && '（多选）'}
                         </label>
                         {vocabOptions.length > 0 ? (
                           <ControlledVocabCombobox
@@ -618,8 +577,8 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                             }
                             placeholder={
                               def.allowMultiple
-                                ? '输入关键词检索词表（↑↓ 方向键选择，可多选）'
-                                : '输入关键词检索或选择标准词表取值…'
+                                ? '搜索词表，可多选'
+                                : '搜索词表'
                             }
                           />
                         ) : (
@@ -643,10 +602,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                   )}
 
                   {/* Evidence Binding List */}
-                  <div className="rounded-md border border-slate-200 bg-slate-50/60 p-2.5">
-                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="border-t border-slate-100 pt-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-medium text-slate-700">
-                        证据摘录
+                        证据摘录 <span className="ml-1 font-normal tabular-nums text-slate-500">{record.evidences.length}</span>
                       </span>
                       <div className="flex items-center gap-3">
                         <button
@@ -671,15 +630,13 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-slate-600 hover:text-slate-900 hover:underline"
                         >
                           <Plus className="h-3 w-3" />
-                          手动添加一条
+                          添加摘录
                         </button>
                       </div>
                     </div>
 
-                    {record.evidences.length === 0 ? (
-                      <p className="text-xs text-slate-400">暂无证据</p>
-                    ) : (
-                      <div className="flex flex-col gap-1.5">
+                    {record.evidences.length > 0 && (
+                      <div className="mt-2 flex flex-col gap-1.5">
                         {record.evidences.map((ev, idx) => (
                           <div key={ev.id} className="flex items-center gap-2">
                             <span className="text-xs text-slate-500">第</span>
@@ -759,7 +716,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                             })
                           }
                           placeholder="若有分歧，请填写争议原因（主体/值/证据不一致）…"
-                          className="min-w-[240px] flex-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900"
+                          className="min-w-[min(12rem,100%)] flex-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900"
                         />
                         <div className="flex items-center gap-3">
                           <button
@@ -809,7 +766,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                             })
                           }
                           placeholder="填写业务裁定结论与依据说明…"
-                          className="min-w-[240px] flex-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900"
+                          className="min-w-[min(12rem,100%)] flex-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-900"
                         />
                         <button
                           type="button"
@@ -947,7 +904,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       {isExistingLiability ? (
                         <>
                           <Check className="h-3 w-3 text-emerald-700" />
-                          已有责任划分 ({existingSubjectLiability?.id})
+                          已有责任划分
                         </>
                       ) : (
                         <>
@@ -1105,11 +1062,8 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                     >
                       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono-tabular font-semibold text-slate-900">
-                            {item.id}
-                          </span>
-                          <span aria-hidden="true">·</span>
-                          <span className="font-medium text-blue-800">{catTitle}</span>
+                          <span className="font-semibold text-slate-900">{catTitle}</span>
+                          <RecordInfo label={`${catTitle}的记录信息`} rows={[['记录编号', item.id]]} />
                         </div>
                         <div className="flex items-center gap-2">
                           <ReviewLifecycleBar
@@ -1150,7 +1104,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         </div>
                         <div>
                           <label className="mb-1 block text-xs font-medium text-slate-700">
-                            存在性状态 (presence)
+                            存在性状态
                           </label>
                           <select
                             value={item.presenceStatus}
@@ -1170,7 +1124,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         </div>
                         <div>
                           <label className="mb-1 block text-xs font-medium text-slate-700">
-                            标准结论 (candidate_value)
+                            标准结论
                           </label>
                           {(() => {
                             const legalFieldCode =
@@ -1211,7 +1165,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         <div className="mt-2 grid grid-cols-1 gap-2 rounded border border-slate-200 bg-white p-2 sm:grid-cols-12">
                           <div className="sm:col-span-5">
                             <label className="mb-1 block text-xs font-medium text-slate-700">
-                              因果关联状态 (causal_link_status)
+                              因果关联状态
                             </label>
                             <select
                               value={item.causalLinkStatus || 'unspecified'}
@@ -1223,10 +1177,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               }
                               className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
                             >
-                              <option value="unspecified">未明确 (unspecified)</option>
-                              <option value="explicit_linked">明确关联违法 (explicit_linked)</option>
-                              <option value="explicit_unlinked">明确无直接因果 (explicit_unlinked)</option>
-                              <option value="multiple_mixed">多因混合 (multiple_mixed)</option>
+                              <option value="unspecified">未明确</option>
+                              <option value="explicit_linked">明确关联违法</option>
+                              <option value="explicit_unlinked">明确无直接因果</option>
+                              <option value="multiple_mixed">多因混合</option>
                             </select>
                           </div>
                           {item.category === 'violation' && (
@@ -1282,7 +1236,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                             <div className="sm:col-span-7">
                               <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                                 <span className="text-xs font-medium text-slate-700">
-                                  关联违法记录 (linked_violation_record_ids)
+                                  关联违法记录
                                 </span>
                                 <button
                                   type="button"
@@ -1298,7 +1252,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                               </div>
                               {scopedViolations.primaryItems.length === 0 ? (
                                 <span className="text-xs text-slate-400">
-                                  当前主体 {item.subjectId} 暂无可勾选违法记录，请点击右上「补录违法行为并关联」
+                                  当前主体 {item.subjectId} 暂无可关联的违法记录
                                 </span>
                               ) : (
                                 <div className="flex flex-wrap gap-1.5">
@@ -1416,7 +1370,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         <div className="mt-2 rounded border border-slate-200 bg-white p-2">
                           <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                             <span className="text-xs font-medium text-slate-700">
-                              责任依据的认定原因 (linked_cause_record_ids)
+                              责任依据的认定原因
                             </span>
                             <button
                               type="button"
@@ -1432,7 +1386,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           </div>
                           {scopedCauses.primaryItems.length === 0 ? (
                             <span className="text-xs text-slate-400">
-                              当前主体 {item.subjectId} 暂无认定原因记录，若文书认定有责可点击右上「补录认定原因并关联」
+                              当前主体 {item.subjectId} 暂无可关联的认定原因
                             </span>
                           ) : (
                             <div className="flex flex-wrap gap-1.5">
@@ -1544,7 +1498,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
 
                       <div className="mt-2">
                         <label className="mb-1 block text-xs font-medium text-slate-700">
-                          文书原文结论 (raw_value)
+                          文书原文结论
                         </label>
                         <textarea
                           rows={2}
@@ -1780,7 +1734,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                 onClick={onOpenLegalTab}
                 className="whitespace-nowrap text-xs font-medium text-slate-600 hover:text-slate-900 hover:underline"
               >
-                前往「法律与关系」完整视图 →
+                查看法律与因果关系 →
               </button>
             </div>
           </div>
@@ -1795,7 +1749,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
               <div className="flex flex-col gap-3">
                 {eventRelations.length === 0 ? (
                   <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-4 text-center text-xs text-slate-500">
-                    本事件尚未登记碰撞主客体关系，请点击右上角「新增本事件碰撞关系」。
+                    尚无碰撞关系
                   </p>
                 ) : (
                   eventRelations.map((rel) => {
@@ -1816,9 +1770,10 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                         )}`}
                       >
                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                          <span className="font-mono-tabular font-semibold text-slate-900">
-                            顺序 #{rel.stageOrder} · {rel.fieldCode || 'D08.F049'} · {rel.id}
-                          </span>
+                          <div className="flex items-center gap-1.5 font-semibold text-slate-900">
+                            碰撞关系 · 顺序 {rel.stageOrder}
+                            <RecordInfo label="碰撞关系的记录信息" rows={[['记录编号', rel.id], ['字段编码', rel.fieldCode || 'D08.F049']]} />
+                          </div>
                           <div className="flex items-center gap-2">
                             <ReviewLifecycleBar
                               reviewStatus={rel.reviewStatus}
