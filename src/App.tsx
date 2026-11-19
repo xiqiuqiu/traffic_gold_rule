@@ -5,6 +5,8 @@ import {
   BookOpen,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
+  Ellipsis,
   Loader2,
   Lock,
   RotateCcw,
@@ -14,6 +16,8 @@ import {
   UserRound,
   X,
 } from 'lucide-react';
+import { Menu } from '@base-ui/react/menu';
+import { CaseHeading } from './components/CaseHeading';
 import { Toaster } from 'sonner';
 import { CatalogContext } from './components/useCatalogOptions';
 import { api as catalogApi } from './utils/catalogApi';
@@ -34,7 +38,6 @@ import {
   INITIAL_VOCABULARY_SUPPLEMENTS,
   MASTER_FIELD_SCHEMA,
   PRESENCE_STATUS_META,
-  USER_ROLE_META,
 } from './data/schemaCatalog';
 import { SEED_CASES } from './data/seedCases';
 import {
@@ -98,6 +101,8 @@ import {
 
 type SystemView = 'catalog' | 'tasks' | 'detail' | 'similar' | 'audit' | 'system';
 type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export';
+
+const detailMenuItemClass = 'flex items-center gap-2 rounded px-2.5 py-2 data-highlighted:bg-slate-100 data-disabled:opacity-45';
 
 const STORAGE_CASES_KEY = 'gold_workbench_cases_v3';
 const STORAGE_SUPPLEMENTS_KEY = 'gold_workbench_supplements_v1';
@@ -623,10 +628,6 @@ export default function App() {
     [activeCase, selectedEntityId],
   );
 
-  const readiness = useMemo(
-    () => computeCaseReadiness(activeCase, supplements),
-    [activeCase, supplements],
-  );
   const entityProgressMap = useMemo(
     () => computeEntityProgressMap(activeCase, supplements),
     [activeCase, supplements],
@@ -643,9 +644,6 @@ export default function App() {
     }
     return counts;
   }, [entityProgressMap]);
-
-  const totalCaseItemsCount =
-    readiness.totalFieldRecords + readiness.totalLegalItems + readiness.totalRelations;
 
   const updateActiveCase = (updater: (prev: CaseDocument) => CaseDocument) => {
     setCases((prevList) =>
@@ -1641,94 +1639,54 @@ export default function App() {
       </dialog>
 
       {systemView === 'detail' && (
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-2">
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => setSystemView('tasks')}
-              className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-100"
-            >
-              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-              返回任务列表
+        <section aria-label="任务详情" className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-b border-slate-200 bg-white px-5 py-2 max-sm:px-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3 max-sm:basis-full">
+            <button type="button" onClick={() => setSystemView('tasks')} aria-label="返回任务列表" title="返回任务列表" className="inline-flex shrink-0 items-center gap-1 rounded py-1.5 text-xs text-slate-600 hover:text-blue-700 focus-visible:outline-blue-700">
+              <ArrowLeft className="size-4" aria-hidden="true" />
+              <span className="max-sm:hidden">任务列表</span>
             </button>
-
-            <span className="max-w-[320px] truncate text-xs font-medium text-slate-800" title={activeCase.title}>
-              案件详情 · {activeCase.title}
-            </span>
-
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/pdf"
-              onChange={handleImportLocalPdfFromDetail}
-              className="hidden"
-              aria-label="导入本地 PDF 文件"
-            />
-            <button
-              type="button"
-              disabled={!canUploadAndRun || uploading}
-              onClick={() => fileInputRef.current?.click()}
-              className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-45"
-            >
-              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-              导入本地 PDF
-            </button>
-
+            <span aria-hidden="true" className="h-4 w-px shrink-0 bg-slate-200" />
+            <CaseHeading caseDoc={activeCase} taskId={activeTask?.taskId} />
+          </div>
+          <div className="ml-auto flex items-center gap-2 text-xs">
+            {!canEditCase && <span className="inline-flex items-center gap-1 text-slate-500"><Lock className="size-3.5" aria-hidden="true" />只读</span>}
+            {!waitingForDraft && (
+              <button
+                type="button"
+                onClick={() => handleOpenAcceptanceWithStatus(pendingItemsCount ? 'pending_action' : 'all')}
+                className="inline-flex items-center gap-1 rounded px-2 py-1.5 font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-blue-700"
+              >
+                {pendingItemsCount ? <>待处理 <span className="tabular-nums text-amber-800">{pendingItemsCount}</span> 项</> : '查看验收'}
+                <ChevronRight className="size-3.5 text-slate-500" aria-hidden="true" />
+              </button>
+            )}
             <button
               type="button"
               disabled={!canEditCase || waitingForDraft}
               onClick={() => setAiPanelOpen((v) => !v)}
               aria-expanded={aiPanelOpen}
-              className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                aiPanelOpen
-                  ? 'bg-blue-50 text-blue-800'
-                  : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
-              }`}
+              className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 font-medium text-slate-700 hover:bg-slate-50 aria-expanded:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45"
             >
-              <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-              AI 预分析
+              <Sparkles className="size-3.5" aria-hidden="true" />AI 预分析
             </button>
+            <input ref={fileInputRef} type="file" accept="application/pdf" onChange={handleImportLocalPdfFromDetail} hidden aria-label="导入本地 PDF 文件" />
+            <Menu.Root>
+              <Menu.Trigger aria-label="更多操作" title="更多操作" className="inline-flex size-8 items-center justify-center rounded-md text-slate-600 hover:bg-slate-100 data-popup-open:bg-slate-100">
+                <Ellipsis className="size-4" aria-hidden="true" />
+              </Menu.Trigger>
+              <Menu.Portal>
+                <Menu.Positioner align="end" sideOffset={4} className="z-50">
+                  <Menu.Popup aria-label="更多操作" className="min-w-36 rounded-md border border-slate-200 bg-white p-1 text-xs text-slate-700 shadow-md">
+                    <Menu.Item className={detailMenuItemClass} disabled={!canUploadAndRun || uploading} onClick={() => fileInputRef.current?.click()}><Upload className="size-3.5" aria-hidden="true" />导入本地 PDF</Menu.Item>
+                    <Menu.Item className={detailMenuItemClass} onClick={() => setManualOpen(true)}><BookOpen className="size-3.5" aria-hidden="true" />标注手册</Menu.Item>
+                    <Menu.Separator className="my-1 border-t border-slate-100" />
+                    <Menu.Item className={detailMenuItemClass} onClick={handleResetDemo}><RotateCcw className="size-3.5" aria-hidden="true" />重置样本</Menu.Item>
+                  </Menu.Popup>
+                </Menu.Positioner>
+              </Menu.Portal>
+            </Menu.Root>
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
-            <span className="font-mono-tabular">
-              {activeCase.caseId} · {activeCase.pageCount} 页 · 全案 {totalCaseItemsCount} 项（草稿{' '}
-              {readiness.statusCounts.draft} / 争议 {readiness.statusCounts.disputed} / 已复核{' '}
-              {readiness.statusCounts.checked} / 裁定 {readiness.statusCounts.specialist_review}）
-            </span>
-            <span aria-hidden="true">·</span>
-            <button
-              type="button"
-              disabled={waitingForDraft}
-              onClick={() =>
-                handleOpenAcceptanceWithStatus(pendingItemsCount > 0 ? 'pending_action' : 'all')
-              }
-              className={`inline-flex items-center gap-1 whitespace-nowrap font-medium underline-offset-2 hover:underline ${
-                pendingItemsCount > 0 ? 'text-amber-800' : 'text-emerald-800'
-              }`}
-            >
-              {pendingItemsCount > 0 ? `待处理 ${pendingItemsCount} 项（去验收排查）` : '全部已处理'}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setManualOpen(true)}
-              className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900"
-            >
-              <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
-              标注手册
-            </button>
-
-            <button
-              type="button"
-              onClick={handleResetDemo}
-              title="重置为初始授权样本状态"
-              className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-200/70 hover:text-slate-900"
-            >
-              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-              重置样本
-            </button>
-          </div>
-        </div>
+        </section>
       )}
 
       {/* Transient RBAC / Identity Switch Feedback Bar */}
@@ -1880,23 +1838,7 @@ export default function App() {
                 )}
               </section>
             ) : <>
-            {/* Case Detail Sub-Tab Switcher + Document Identity Strip */}
-            <div className="border-b border-slate-200 bg-white px-5 pt-2">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-2 text-xs text-slate-500">
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-mono-tabular font-medium text-slate-800">
-                    {activeCase.documentId || activeCase.caseId.toLowerCase()}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span className="font-mono-tabular">
-                    业务编号：{extractAccidentBizId(activeCase) || '待补充 D01.F001'}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span className="font-mono-tabular">{activeCase.fileSha256}</span>
-                </div>
-                <span className="text-slate-600">{USER_ROLE_META[userRole].badgeText}</span>
-              </div>
-
+            <div className="border-b border-slate-200 bg-white px-5">
               <div
                 role="tablist"
                 aria-label="案件分析详情子视图"
@@ -1927,16 +1869,6 @@ export default function App() {
                 ))}
               </div>
             </div>
-
-            {!canEditCase && (
-              <div className="flex items-center gap-2 border-b border-slate-200 bg-slate-100 px-5 py-2 text-xs text-slate-700">
-                <Lock className="h-3.5 w-3.5 shrink-0 text-slate-500" aria-hidden="true" />
-                <span>
-                  当前身份（{EXTENDED_ROLE_META[activeIdentity.role].label}
-                  ）处于只读查看模式：可查阅 PDF 原文与全部标注字段，修改操作将被权限策略拦截。
-                </span>
-              </div>
-            )}
 
             {aiPanelOpen && (
               <section
