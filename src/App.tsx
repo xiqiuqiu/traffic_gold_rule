@@ -18,7 +18,6 @@ import { EntityRegistryBar } from './components/EntityRegistryBar';
 import { FieldAnnotationPanel } from './components/FieldAnnotationPanel';
 import { LegalRelationsPanel } from './components/LegalRelationsPanel';
 import { ManualDrawer } from './components/ManualDrawer';
-import { ModelSettingsPanel } from './components/ModelSettingsPanel';
 import { PdfEvidenceViewer } from './components/PdfEvidenceViewer';
 import { PermissionsPanel } from './components/PermissionsPanel';
 import { SimilarCaseFusionPanel } from './components/SimilarCaseFusionPanel';
@@ -85,7 +84,7 @@ import {
 } from './utils/systemEngine';
 
 type SystemView = 'tasks' | 'detail' | 'similar' | 'audit' | 'system';
-type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export' | 'settings';
+type WorkspaceTab = 'fields' | 'legal' | 'vocab' | 'export';
 
 const STORAGE_CASES_KEY = 'gold_workbench_cases_v3';
 const STORAGE_SUPPLEMENTS_KEY = 'gold_workbench_supplements_v1';
@@ -1612,6 +1611,8 @@ export default function App() {
     [canAuditPermissions, notifyPermissionBlocked, recordAuditEvent],
   );
 
+  const activeSection = systemView === 'detail' ? 'tasks' : systemView;
+
   const handleResetDemo = () => {
     localStorage.removeItem(STORAGE_CASES_KEY);
     localStorage.removeItem(STORAGE_SUPPLEMENTS_KEY);
@@ -1636,18 +1637,18 @@ export default function App() {
           {(
             [
               ['tasks', '任务调度'],
-              ['detail', '案件详情'],
               ['similar', '类案与融合'],
               ['audit', '全链路审计'],
               ['system', '权限与设置'],
-            ] as Array<[SystemView, string]>
+            ] as Array<[Exclude<SystemView, 'detail'>, string]>
           ).map(([viewKey, label]) => (
             <button
               key={viewKey}
               type="button"
+              aria-current={activeSection === viewKey ? 'location' : undefined}
               onClick={() => setSystemView(viewKey)}
               className={`shrink-0 whitespace-nowrap border-b-2 py-1 transition-colors ${
-                systemView === viewKey
+                activeSection === viewKey
                   ? 'border-blue-700 text-blue-800'
                   : 'border-transparent text-slate-600 hover:text-slate-900'
               }`}
@@ -1709,26 +1710,12 @@ export default function App() {
                 className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-100"
               >
                 <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-                返回任务调度
+                返回任务列表
               </button>
 
-              <div className="flex items-center gap-2">
-                <label htmlFor="case-selector" className="text-xs font-medium text-slate-600">
-                  当前案件
-                </label>
-                <select
-                  id="case-selector"
-                  value={activeCase.caseId}
-                  onChange={(e) => setActiveCaseId(e.target.value)}
-                  className="max-w-[260px] rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-900"
-                >
-                  {cases.map((c) => (
-                    <option key={c.caseId} value={c.caseId}>
-                      {c.title}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <span className="max-w-[320px] truncate text-xs font-medium text-slate-800" title={activeCase.title}>
+                案件详情 · {activeCase.title}
+              </span>
 
               <input
                 ref={fileInputRef}
@@ -1993,7 +1980,6 @@ export default function App() {
                     ['legal', '法律与因果关系'],
                     ['vocab', '受控词表增补'],
                     ['export', '交付验收与导出'],
-                    ['settings', '模型接口设置'],
                   ] as Array<[WorkspaceTab, string]>
                 ).map(([tabKey, label]) => (
                   <button
@@ -2047,7 +2033,7 @@ export default function App() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => setActiveTab('settings')}
+                      onClick={handleOpenModelSettings}
                       className="inline-flex items-center gap-1 whitespace-nowrap font-medium text-blue-700 hover:underline"
                     >
                       <Settings className="h-3 w-3" aria-hidden="true" />
@@ -2268,20 +2254,6 @@ export default function App() {
                   updateActiveCase((prev) => ({ ...prev, maskPiiOnExport: mask }))
                 }
                 onBatchApproveDrafts={handleBatchApproveDrafts}
-              />
-            )}
-
-            {activeTab === 'settings' && (
-              <ModelSettingsPanel
-                settings={aiSettings}
-                onChangeSettings={(next) => {
-                  setAiSettings(next);
-                  setAiError(null);
-                }}
-                onJumpToPreanalyze={() => {
-                  setActiveTab('fields');
-                  setAiPanelOpen(true);
-                }}
               />
             )}
           </div>
