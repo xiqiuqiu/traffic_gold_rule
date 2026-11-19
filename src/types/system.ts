@@ -34,6 +34,7 @@ export interface AnalysisTask {
   stageLabel: string;
   caseId: string;
   accidentBizId: string;
+  title?: string;
   filename: string;
   filePath?: string;
   pdfUrl: string;

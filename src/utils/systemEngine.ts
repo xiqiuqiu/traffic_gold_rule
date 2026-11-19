@@ -1,3 +1,4 @@
+import { accidentTitle } from './accidentTitle';
 import { INITIAL_VOCABULARY_SUPPLEMENTS } from '../data/schemaCatalog';
 import { CaseDocument, UserRole, VocabularySupplementItem } from '../types/gold';
 import {
@@ -282,6 +283,7 @@ export function buildSeedTasksFromCases(cases: CaseDocument[]): AnalysisTask[] {
       stageLabel: status === 'approved' ? '已复核并入库' : '大模型初稿提取完成，等待人工审核',
       caseId: c.caseId,
       accidentBizId: bizId,
+      title: accidentTitle(c),
       filename: c.sourceFilename,
       filePath: `./public/assets/aistudio/${c.sourceFilename}`,
       pdfUrl: c.pdfUrl,
@@ -384,7 +386,7 @@ export function filterAnalysisTasks(
       return false;
     }
     if (q) {
-      const hay = `${t.taskId} ${t.caseId} ${t.accidentBizId} ${t.filename} ${t.stageLabel} ${t.modelLabel}`.toLowerCase();
+      const hay = `${t.taskId} ${t.caseId} ${t.accidentBizId} ${t.title || ''} ${t.filename} ${t.stageLabel} ${t.modelLabel}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;

@@ -1,3 +1,4 @@
+import { accidentTitle } from '../utils/accidentTitle';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -116,6 +117,21 @@ export async function initPdfQueue() {
       CREATE INDEX IF NOT EXISTS pdf_run_artifacts_task ON pdf_run_artifacts (task_id);
     `);
   });
+
+  // Older completed tasks have a draft but no list title. Keep draft reads off the polling endpoint.
+  let after = '';
+  for (;;) {
+    const batch = await pool.query<{ id: string; draft: CaseDocument }>(
+      `SELECT id, draft FROM pdf_tasks WHERE id > $1 AND draft IS NOT NULL AND NOT (task ? 'title')
+       ORDER BY id LIMIT 100`, [after]);
+    if (!batch.rows.length) break;
+    const titles = batch.rows.map(({ id, draft }) => ({ id, title: accidentTitle(draft) }));
+    await pool.query(
+      `UPDATE pdf_tasks t SET task = t.task || jsonb_build_object('title', s.title)
+       FROM jsonb_to_recordset($1::jsonb) AS s(id text, title text)
+       WHERE t.id = s.id AND NOT (t.task ? 'title')`, [JSON.stringify(titles)]);
+    after = batch.rows[batch.rows.length - 1].id;
+  }
 }
 
 function originalPath(hash: string) {
@@ -508,7 +524,7 @@ export async function completePdfTask(lease: PdfLease, draft: CaseDocument): Pro
   if (draft.caseId !== lease.task.caseId) throw new Error('草稿案件与当前任务不一致');
   const count = draft.fieldRecords.length + draft.legalConclusions.length;
   const patch = { status: 'pending_review', progress: 100, stageLabel: `提取 ${count} 项结构化草稿，等待人工审核`,
-    accidentBizId: extractAccidentBizId(draft), pageCount: draft.pageCount, extractedFieldsCount: count };
+    title: accidentTitle(draft), accidentBizId: extractAccidentBizId(draft), pageCount: draft.pageCount, extractedFieldsCount: count };
   return transaction(async (client) => {
     const result = await client.query(`UPDATE pdf_tasks SET lease_until=NULL,draft=$3,
       task=(task - 'errorMessage') || $4::jsonb || jsonb_build_object('finishedAt',now(),'updatedAt',now(),

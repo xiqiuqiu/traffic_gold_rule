@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { Pool } from 'pg';
+import { accidentTitle } from '../utils/accidentTitle';
 import { SEED_CASES } from '../data/seedCases';
 import type { PdfPageEvidence } from './pageEvidence';
 
@@ -132,6 +133,14 @@ test('原件去重、待命、领取与故障恢复共用 PostgreSQL 的任务�
   assert.equal(await queue.updatePdfProgress(recovered, 'ai_extracting', '模型读取中', 60, 'test'), true);
   assert.equal(await queue.completePdfTask(recovered, draft), true);
   assert.deepEqual(await queue.getPdfDraft(staged.taskId), JSON.parse(JSON.stringify(draft)));
+  await t.test('完成后列表即可读取事故标题，旧任务从已存草稿补齐', async () => {
+    const title = accidentTitle(draft);
+    const listTitle = async () => (await queue.listPdfTasks()).tasks.find(task => task.taskId === staged.taskId)?.title;
+    assert.equal(await listTitle(), title);
+    await queue.pool.query("UPDATE pdf_tasks SET task=task-'title' WHERE id=$1", [staged.taskId]);
+    await queue.initPdfQueue();
+    assert.equal(await listTitle(), title);
+  });
   await t.test('已有草稿按本次解析的行补定位，保留人工确认和历史快照', async () => {
     const item = { ...draft.legalConclusions.find(l => l.category === 'liability')!,
       subjectId: 'P01', eventId: '', conclusionLabel: '无责任', rawText: '王小明无责任',

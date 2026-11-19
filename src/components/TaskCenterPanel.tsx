@@ -371,10 +371,10 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
               />
               <input
                 type="search"
-                aria-label="搜索任务编号、文件名或事故业务编号"
+                aria-label="搜索事故描述、文件名或编号"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="搜文件名 / 事故业务编号…"
+                placeholder="搜事故描述、文件名或编号…"
                 className="w-56 rounded border border-slate-300 bg-white py-1.5 pr-2.5 pl-8 text-xs text-slate-900"
               />
             </div>
@@ -394,7 +394,7 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
           <table className="w-full border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-                <th className="px-4 py-2.5 font-medium">任务 / 来源</th>
+                <th className="px-4 py-2.5 font-medium">事故 / 来源</th>
                 <th className="px-4 py-2.5 font-medium">PDF 材料文件</th>
                 <th className="px-4 py-2.5 font-medium">事故业务编号 (D01.F001)</th>
                 <th className="px-4 py-2.5 font-medium">执行进度与阶段</th>
@@ -418,8 +418,8 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
                   return (
                     <tr key={task.taskId} className="hover:bg-slate-50/70">
                       <td className="px-4 py-3 align-top">
-                        <div className="font-mono-tabular font-semibold text-slate-900">
-                          {task.caseId}
+                        <div className="line-clamp-2 min-w-48 max-w-sm break-words font-semibold text-slate-900" title={task.title || task.filename}>
+                          {task.title || task.filename}
                         </div>
                         <div className="mt-0.5 text-[11px] text-slate-500">
                           {SOURCE_LABELS[task.source]} · {task.createdByName}

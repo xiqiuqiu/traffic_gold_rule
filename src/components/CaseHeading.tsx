@@ -3,13 +3,8 @@ import { Info } from 'lucide-react';
 import type { CaseDocument } from '../types/gold';
 import { extractAccidentBizId } from '../utils/systemEngine';
 
-export function CaseHeading({ caseDoc, taskId }: { caseDoc: CaseDocument; taskId?: string }) {
-  const { caseId, title, sourceFilename, documentId, sourceHashFull, fileSha256 } = caseDoc;
-  const accidentName = caseDoc.entities.find(entity => entity.id === 'ACC')?.label.trim();
-  const generatedTitle = !title || title === caseId || title.startsWith(caseId + ' · ');
-  const displayTitle = generatedTitle
-    ? (accidentName && accidentName !== '整起事故' ? accidentName : sourceFilename) || '案件详情'
-    : title;
+export function CaseHeading({ caseDoc, taskId, title }: { caseDoc: CaseDocument; taskId?: string; title: string }) {
+  const { caseId, documentId, sourceHashFull, fileSha256 } = caseDoc;
   const details = [
     ['事故业务编号', extractAccidentBizId(caseDoc) || '待补充'],
     ['任务 ID', taskId],
@@ -20,7 +15,7 @@ export function CaseHeading({ caseDoc, taskId }: { caseDoc: CaseDocument; taskId
 
   return (
     <div className="flex min-w-0 items-center gap-1.5">
-      <h1 className="truncate text-sm font-semibold text-slate-900" title={displayTitle}>{displayTitle}</h1>
+      <h1 className="truncate text-sm font-semibold text-slate-900" title={title}>{title}</h1>
       <Popover.Root>
         <Popover.Trigger openOnHover closeDelay={180} aria-label="案件信息" className="inline-flex size-7 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus-visible:outline-blue-700 data-popup-open:bg-slate-100">
           <Info className="size-4" aria-hidden="true" />

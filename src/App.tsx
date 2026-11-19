@@ -17,6 +17,7 @@ import {
   X,
 } from 'lucide-react';
 import { Menu } from '@base-ui/react/menu';
+import { accidentTitle } from './utils/accidentTitle';
 import { CaseHeading } from './components/CaseHeading';
 import { Toaster } from 'sonner';
 import { CatalogContext } from './components/useCatalogOptions';
@@ -483,6 +484,7 @@ export default function App() {
     return tasks.map((t) => {
       const matchedCase = localCases.get(t.caseId);
       if (!matchedCase) return t;
+      const title = accidentTitle(matchedCase);
       const bizId = extractAccidentBizId(matchedCase);
       const extractedCount =
         matchedCase.fieldRecords.length + matchedCase.legalConclusions.length;
@@ -500,7 +502,7 @@ export default function App() {
             ? '存在待人工复核/补充项'
             : t.stageLabel;
       if (
-        t.accidentBizId === bizId &&
+        t.title === title && t.accidentBizId === bizId &&
         t.extractedFieldsCount === extractedCount &&
         t.status === nextStatus &&
         t.stageLabel === nextStageLabel
@@ -509,6 +511,7 @@ export default function App() {
       }
       return {
         ...t,
+        title,
         accidentBizId: bizId,
         extractedFieldsCount: extractedCount,
         status: nextStatus,
@@ -1646,7 +1649,7 @@ export default function App() {
               <span className="max-sm:hidden">任务列表</span>
             </button>
             <span aria-hidden="true" className="h-4 w-px shrink-0 bg-slate-200" />
-            <CaseHeading caseDoc={activeCase} taskId={activeTask?.taskId} />
+            <CaseHeading caseDoc={activeCase} taskId={activeTask?.taskId} title={waitingForDraft ? activeTask?.title || activeCase.sourceFilename : accidentTitle(activeCase)} />
           </div>
           <div className="ml-auto flex items-center gap-2 text-xs">
             {!canEditCase && <span className="inline-flex items-center gap-1 text-slate-500"><Lock className="size-3.5" aria-hidden="true" />只读</span>}
