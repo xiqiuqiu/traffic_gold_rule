@@ -70,9 +70,10 @@ import {
   AiProviderSettings,
   getActiveModelSummary,
   loadAiProviderSettings,
-  saveAiProviderSettings,
+  AI_SETTINGS_STORAGE_KEY,
+  DEFAULT_AI_PROVIDER_SETTINGS,
 } from './utils/aiSettings';
-import { extractPdfPagesFromUrl } from './utils/pdfExtractor';
+import { createPlaceholderCaseForTask } from './utils/taskCase';
 import {
   DEFAULT_IDENTITIES,
   DEFAULT_ROLE_PERMISSIONS,
@@ -98,7 +99,8 @@ function loadInitialCases(): CaseDocument[] {
     if (!raw) return SEED_CASES;
     const parsed = JSON.parse(raw) as CaseDocument[];
     if (Array.isArray(parsed) && parsed.length > 0) {
-      return parsed.filter((c) => !c.pdfUrl.startsWith('blob:'));
+      const available = parsed.filter((c) => !c.pdfUrl.startsWith('blob:'));
+      return available.length ? available : SEED_CASES;
     }
   } catch {
     // Fall back to seed data
@@ -118,41 +120,12 @@ function loadInitialSupplements(): VocabularySupplementItem[] {
   return INITIAL_VOCABULARY_SUPPLEMENTS;
 }
 
-function createPlaceholderCaseForTask(task: AnalysisTask): CaseDocument {
-  return {
-    caseId: task.caseId,
-    documentId: task.caseId.toLowerCase(),
-    title: `${task.caseId} · ${task.filename.replace(/\.pdf$/i, '')}`,
-    pilotCode: task.source === 'scheduled_batch' ? '定时批量' : '手工上传',
-    scenarioSummary:
-      task.source === 'scheduled_batch'
-        ? `由定时批量扫盘自动入库的案件材料（${task.filename}）。`
-        : `由人工手动上传创建的案件材料（${task.filename}）。`,
-    pdfUrl: task.pdfUrl,
-    sourceFilename: task.filename,
-    fileSha256: task.fileSha256,
-    pageCount: task.pageCount || 1,
-    manualVersion: '试行版 · 首批6份',
-    annotationVersion: 'v1.0',
-    maskPiiOnExport: true,
-    annotatorName: task.createdByName || '第一标注人',
-    reviewerName: '第二复核人',
-    adjudicatorName: '',
-    entities: [
-      {
-        id: 'ACC',
-        kind: 'ACC',
-        label: '整起事故',
-        subtitle: task.filename,
-        roleLabel: '事故主体',
-      },
-    ],
-    fieldRecords: [],
-    legalConclusions: [],
-    relations: [],
-    checklist: {},
-    auditLog: [],
-  };
+async function readApiResult(response: Response) {
+  const data = await response.json().catch(() => null);
+  if (!response.ok || !data) {
+    throw new Error(data?.error || `服务请求失败（HTTP ${response.status}）`);
+  }
+  return data;
 }
 
 export default function App() {
@@ -166,6 +139,13 @@ export default function App() {
 
   // System-level state (Tasks, Schedule, RBAC, Identities, Audit)
   const [tasks, setTasks] = useState<AnalysisTask[]>(() => buildSeedTasksFromCases(SEED_CASES));
+  const [taskPages, setTaskPages] = useState<string[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingPage, setLoadingPage] = useState(false);
+  const [taskListError, setTaskListError] = useState('');
+  const taskCursor = taskPages.at(-1);
+  const activeTask = tasks.find((task) => task.caseId === activeCaseId);
+  const detailTaskId = activeTask?.taskId.startsWith('PDF-') ? activeTask.taskId : null;
   const [scheduleConfig, setScheduleConfig] =
     useState<BatchScheduleConfig>(DEFAULT_SCHEDULE_CONFIG);
   const [auditLogs, setAuditLogs] = useState<SystemAuditEvent[]>(() =>
@@ -228,20 +208,17 @@ export default function App() {
   const [aiLastResult, setAiLastResult] = useState<
     (Omit<AiPreanalyzeMergeResult, 'nextCase'> & { caseId: string }) | null
   >(null);
-  const [aiSettings, setAiSettings] = useState<AiProviderSettings>(loadAiProviderSettings);
+  const [aiSettings, setAiSettings] = useState<AiProviderSettings>(DEFAULT_AI_PROVIDER_SETTINGS);
+  const [settingsReady, setSettingsReady] = useState(false);
+  const [hasServerKey, setHasServerKey] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const [draftError, setDraftError] = useState('');
+  const [draftAttempt, setDraftAttempt] = useState(0);
+  const machineDrafts = useRef(new WeakSet<CaseDocument>());
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const uploadDialogRef = useRef<HTMLDialogElement>(null);
-
-  // Latest state refs for async pipelines
-  const casesRef = useRef(cases);
-  casesRef.current = cases;
-  const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
-  const supplementsRef = useRef(supplements);
-  supplementsRef.current = supplements;
-  const aiSettingsRef = useRef(aiSettings);
-  aiSettingsRef.current = aiSettings;
 
   const activeIdentity = useMemo(
     () => identities.find((i) => i.id === activeIdentityId) || identities[0],
@@ -287,7 +264,7 @@ export default function App() {
       const existingIds = new Set(prev.map((c) => c.caseId));
       const additions: CaseDocument[] = [];
       for (const t of incomingTasks) {
-        if (!existingIds.has(t.caseId)) {
+        if (!t.taskId.startsWith('PDF-') && !existingIds.has(t.caseId)) {
           existingIds.add(t.caseId);
           additions.push(createPlaceholderCaseForTask(t));
         }
@@ -296,7 +273,8 @@ export default function App() {
     });
   }, []);
 
-  // Bootstrap persisted system state from Express backend
+  // Refresh the audit view when opened so it includes recent worker activity.
+  const viewingAudit = systemView === 'audit';
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -313,7 +291,6 @@ export default function App() {
         if (cancelled) return;
         if (data.scheduleConfig) setScheduleConfig(data.scheduleConfig);
         if (Array.isArray(data.tasks) && data.tasks.length > 0) {
-          setTasks(data.tasks);
           ensureCasesForTasks(data.tasks);
         }
         if (Array.isArray(data.auditLogs)) setAuditLogs(data.auditLogs);
@@ -328,7 +305,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [ensureCasesForTasks]);
+  }, [ensureCasesForTasks, viewingAudit]);
 
   // Persist identity choice
   useEffect(() => {
@@ -342,7 +319,7 @@ export default function App() {
   // Sync case & supplement persistence
   useEffect(() => {
     try {
-      const persistable = cases.filter((c) => !c.pdfUrl.startsWith('blob:'));
+      const persistable = cases.filter((c) => !c.pdfUrl.startsWith('blob:') && !machineDrafts.current.has(c));
       localStorage.setItem(STORAGE_CASES_KEY, JSON.stringify(persistable));
     } catch {
       // Ignore storage quota errors
@@ -358,59 +335,148 @@ export default function App() {
   }, [supplements]);
 
   useEffect(() => {
-    saveAiProviderSettings(aiSettings);
-  }, [aiSettings]);
+    let active = true;
+    (async () => {
+      let data = await readApiResult(await fetch('/api/ai/settings'));
+      if (!active) return;
+      const legacy = loadAiProviderSettings();
+      if (canAuditPermissions && !data.settings && legacy.openai.baseUrl && getActiveModelSummary(legacy).isConfigured) {
+        data = await readApiResult(await fetch('/api/ai/settings', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: legacy, initializeOnly: true, actorRole: activeIdentityRef.current.role }),
+        }));
+        if (!active) return;
+        if (data.created) {
+          localStorage.removeItem(AI_SETTINGS_STORAGE_KEY);
+        }
+      }
+      setAiSettings(data.settings || DEFAULT_AI_PROVIDER_SETTINGS);
+      setHasServerKey(Boolean(data.hasApiKey));
+      setSettingsReady(true);
+    })().catch((err) => {
+      if (active) notifyPermissionBlocked(`读取后台模型配置失败：${err.message}，请刷新重试。`);
+    });
+    return () => { active = false; };
+  }, [notifyPermissionBlocked, canAuditPermissions]);
 
+  const handleSaveAiSettings = async (settings: AiProviderSettings) => {
+    const data = await readApiResult(await fetch('/api/ai/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ settings, actorRole: activeIdentity.role }),
+    }));
+    setAiSettings(data.settings);
+    setHasServerKey(Boolean(data.hasApiKey));
+    setAiError(null);
+  };
+
+  useEffect(() => {
+    const inList = systemView === 'tasks';
+    if (!inList && !(systemView === 'detail' && detailTaskId)) return;
+    let cancelled = false;
+    let timer: number;
+    const url = inList
+      ? `/api/system/tasks${taskCursor ? '?before=' + encodeURIComponent(taskCursor) : ''}`
+      : `/api/system/tasks/${encodeURIComponent(detailTaskId!)}`;
+    if (inList) setLoadingPage(true);
+    const refresh = async () => {
+      try {
+        const response = await fetch(url);
+        if (cancelled) return;
+        if (!inList && response.status === 404) {
+          setSystemView('tasks');
+          notifyPermissionBlocked('这条任务已移除。');
+          return;
+        }
+        const data = await readApiResult(response);
+        if (cancelled) return;
+        if (inList) {
+          setTasks(data.tasks);
+          setNextCursor(data.nextCursor);
+          ensureCasesForTasks(data.tasks);
+          setTaskListError('');
+        } else {
+          setTasks(prev => prev.map(task => task.taskId === detailTaskId ? data.task : task));
+        }
+      } catch (err) {
+        if (!cancelled && inList) setTaskListError(err instanceof Error ? err.message : '获取后台任务失败');
+      } finally {
+        if (!cancelled) {
+          setLoadingPage(false);
+          timer = window.setTimeout(refresh, 4000);
+        }
+      }
+    };
+    void refresh();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [systemView, taskCursor, detailTaskId, ensureCasesForTasks, notifyPermissionBlocked]);
+
+  const isBackgroundCase = Boolean(activeTask?.taskId.startsWith('PDF-'));
+  const localCase = cases.find((c) => c.caseId === activeCaseId);
   const activeCase = useMemo(
-    () => cases.find((c) => c.caseId === activeCaseId) || cases[0],
-    [cases, activeCaseId],
+    () => localCase || (activeTask ? createPlaceholderCaseForTask(activeTask) : cases[0]),
+    [localCase, activeTask, cases],
   );
+  const waitingForDraft = isBackgroundCase && !localCase;
+  const draftTaskId = systemView === 'detail' && waitingForDraft &&
+    (activeTask?.status === 'pending_review' || activeTask?.status === 'approved')
+    ? activeTask.taskId : null;
+  useEffect(() => {
+    setDraftError('');
+    if (!draftTaskId) return;
+    let cancelled = false;
+    (async () => {
+      const { draft } = await readApiResult(await fetch(`/api/system/tasks/${encodeURIComponent(draftTaskId)}/draft`));
+      if (cancelled) return;
+      if (!draft || draft.caseId !== activeCaseId) throw new Error('后台草稿与当前案件不匹配。');
+      machineDrafts.current.add(draft);
+      setCases((prev) => prev.some(c => c.caseId === draft.caseId) ? prev : [...prev, draft]);
+    })().catch((err) => { if (!cancelled) setDraftError(err.message); });
+    return () => { cancelled = true; };
+  }, [draftTaskId, activeCaseId, draftAttempt]);
 
   const activeModelSummary = useMemo(() => getActiveModelSummary(aiSettings), [aiSettings]);
 
   // Keep task metadata (bizId, status approved/pending_review, extractedFieldsCount) synced with cases
-  useEffect(() => {
-    setTasks((prevTasks) => {
-      let changed = false;
-      const next = prevTasks.map((t) => {
-        const matchedCase = cases.find((c) => c.caseId === t.caseId);
-        if (!matchedCase) return t;
-        const bizId = extractAccidentBizId(matchedCase);
-        const extractedCount =
-          matchedCase.fieldRecords.length + matchedCase.legalConclusions.length;
-        const readiness = computeCaseReadiness(matchedCase, supplements);
-        const isTerminalSuccess = t.status === 'pending_review' || t.status === 'approved';
-        const nextStatus = isTerminalSuccess
-          ? readiness.eligibleForScoring
-            ? ('approved' as const)
-            : ('pending_review' as const)
-          : t.status;
-        const nextStageLabel =
-          nextStatus === 'approved' && t.status !== 'approved'
-            ? '已复核并入库'
-            : nextStatus === 'pending_review' && t.status === 'approved'
-              ? '存在待人工复核/补充项'
-              : t.stageLabel;
-        if (
-          t.accidentBizId === bizId &&
-          t.extractedFieldsCount === extractedCount &&
-          t.status === nextStatus &&
-          t.stageLabel === nextStageLabel
-        ) {
-          return t;
-        }
-        changed = true;
-        return {
-          ...t,
-          accidentBizId: bizId,
-          extractedFieldsCount: extractedCount,
-          status: nextStatus,
-          stageLabel: nextStageLabel,
-        };
-      });
-      return changed ? next : prevTasks;
+  const displayedTasks = useMemo(() => {
+    const localCases = new Map(cases.map((c) => [c.caseId, c]));
+    return tasks.map((t) => {
+      const matchedCase = localCases.get(t.caseId);
+      if (!matchedCase) return t;
+      const bizId = extractAccidentBizId(matchedCase);
+      const extractedCount =
+        matchedCase.fieldRecords.length + matchedCase.legalConclusions.length;
+      const readiness = computeCaseReadiness(matchedCase, supplements);
+      const isTerminalSuccess = t.status === 'pending_review' || t.status === 'approved';
+      const nextStatus = isTerminalSuccess
+        ? readiness.eligibleForScoring
+          ? ('approved' as const)
+          : ('pending_review' as const)
+        : t.status;
+      const nextStageLabel =
+        nextStatus === 'approved' && t.status !== 'approved'
+          ? '已复核并入库'
+          : nextStatus === 'pending_review' && t.status === 'approved'
+            ? '存在待人工复核/补充项'
+            : t.stageLabel;
+      if (
+        t.accidentBizId === bizId &&
+        t.extractedFieldsCount === extractedCount &&
+        t.status === nextStatus &&
+        t.stageLabel === nextStageLabel
+      ) {
+        return t;
+      }
+      return {
+        ...t,
+        accidentBizId: bizId,
+        extractedFieldsCount: extractedCount,
+        status: nextStatus,
+        stageLabel: nextStageLabel,
+      };
     });
-  }, [cases, supplements]);
+  }, [tasks, cases, supplements]);
 
   // Record a system-wide audit event locally & persist to backend
   const recordAuditEvent = useCallback(
@@ -454,22 +520,6 @@ export default function App() {
     },
     [],
   );
-
-  const patchTaskState = useCallback(async (taskId: string, patch: Partial<AnalysisTask>) => {
-    const nowIso = new Date().toISOString();
-    setTasks((prev) =>
-      prev.map((t) => (t.taskId === taskId ? { ...t, ...patch, updatedAt: nowIso } : t)),
-    );
-    try {
-      await fetch(`/api/system/tasks/${encodeURIComponent(taskId)}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-    } catch {
-      // Non-fatal offline tolerance
-    }
-  }, []);
 
   useEffect(() => {
     if (!recordScrollRequest) return;
@@ -998,303 +1048,47 @@ export default function App() {
     }
   };
 
-  // Core Task Pipeline Execution (PDF text extract -> LLM preanalyze -> CaseDraft merge -> Status & Audit)
-  const handleRunTaskPipeline = useCallback(
-    async (taskId: string, options?: { bypassRoleCheck?: boolean }) => {
-      if (!options?.bypassRoleCheck && !canUploadAndRun) {
-        notifyPermissionBlocked('当前身份无「手动上传与启停解析」权限。');
-        return;
+  const handleRunTaskPipeline = async (taskId: string) => {
+    if (!canUploadAndRun) return;
+    try {
+      const { task } = await readApiResult(await fetch(`/api/system/tasks/${encodeURIComponent(taskId)}/start`, { method: 'POST' }));
+      setTasks(prev => [task, ...prev.filter(t => t.taskId !== task.taskId)]);
+      if (systemView === 'detail' && activeTask?.taskId === taskId && task.taskId !== taskId) {
+        setActiveCaseId(task.caseId);
       }
-      const targetTask = tasksRef.current.find((t) => t.taskId === taskId);
-      if (!targetTask) return;
+    } catch (err) {
+      notifyPermissionBlocked(err instanceof Error ? err.message : '启动后台任务失败。');
+    }
+  };
 
-      const startedAtMs = Date.now();
-      const startedIso = new Date(startedAtMs).toISOString();
-      const currentModelSummary = getActiveModelSummary(aiSettingsRef.current);
-
-      await patchTaskState(taskId, {
-        status: 'parsing_pdf',
-        progress: 35,
-        stageLabel: '正在抽取 PDF 分页文本与页码索引…',
-        startedAt: startedIso,
-        errorMessage: undefined,
-        modelLabel: `${currentModelSummary.providerLabel} · ${currentModelSummary.modelName}`,
-      });
-
-      try {
-        const extracted = await extractPdfPagesFromUrl(targetTask.pdfUrl, {
-          includeBase64IfEmptyText: aiSettingsRef.current.provider === 'gemini',
-        });
-
-        setCases((prev) =>
-          prev.map((c) =>
-            c.caseId === targetTask.caseId ? { ...c, pageCount: extracted.pageCount } : c,
-          ),
-        );
-
-        if (!currentModelSummary.isConfigured) {
-          throw new Error(
-            currentModelSummary.issueHint ||
-              '未完成大模型接入配置，请前往「权限与设置 → 大模型接入与探测设置」配置后再重试。',
-          );
-        }
-
-        await patchTaskState(taskId, {
-          status: 'ai_extracting',
-          progress: 70,
-          pageCount: extracted.pageCount,
-          stageLabel: '正在调用大模型执行交通事故字段结构化提取…',
-        });
-
-        const providerConfig =
-          aiSettingsRef.current.provider === 'openai_compatible'
-            ? {
-                provider: 'openai_compatible' as const,
-                baseUrl: aiSettingsRef.current.openai.baseUrl,
-                apiKey: aiSettingsRef.current.openai.apiKey,
-                model: aiSettingsRef.current.openai.selectedModel,
-              }
-            : { provider: 'gemini' as const };
-
-        const controller = new AbortController();
-        const timeoutId = window.setTimeout(() => {
-          controller.abort(new Error('timeout'));
-        }, 250_000);
-
-        let response: Response;
-        try {
-          response = await fetch('/api/ai/preanalyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            signal: controller.signal,
-            body: JSON.stringify({
-              caseId: targetTask.caseId,
-              sourceFilename: targetTask.filename,
-              pageCount: extracted.pageCount,
-              pageTexts: extracted.pageTexts,
-              pdfBase64: extracted.pdfBase64,
-              schemaCatalog: buildAiSchemaCatalogPayload(supplementsRef.current),
-              providerConfig,
-            }),
-          });
-        } finally {
-          window.clearTimeout(timeoutId);
-        }
-
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok) {
-          throw new Error(
-            typeof data?.error === 'string' && data.error
-              ? data.error
-              : `大模型解析请求失败（HTTP ${response.status}）`,
-          );
-        }
-
-        const aiPayload = data as AiPreanalyzePayload;
-        const baseCase =
-          casesRef.current.find((c) => c.caseId === targetTask.caseId) ||
-          createPlaceholderCaseForTask(targetTask);
-
-        const merged = mapAiExtractionToCaseDraft(baseCase, aiPayload, {
-          supplements: supplementsRef.current,
-          mergeMode: 'merge_missing',
-          actorRole: mapExtendedRoleToWorkbenchRole(activeIdentityRef.current.role),
-          actorLabel: `${currentModelSummary.providerLabel} (${currentModelSummary.modelName})`,
-        });
-
-        const updatedCase: CaseDocument = {
-          ...merged.nextCase,
-          pageCount: extracted.pageCount,
-        };
-
-        setCases((prev) => {
-          const exists = prev.some((c) => c.caseId === updatedCase.caseId);
-          return exists
-            ? prev.map((c) => (c.caseId === updatedCase.caseId ? updatedCase : c))
-            : [...prev, updatedCase];
-        });
-
-        const nextReadiness = computeCaseReadiness(updatedCase, supplementsRef.current);
-        const extractedBizId = extractAccidentBizId(updatedCase);
-        const extractedFieldsCount =
-          updatedCase.fieldRecords.length + updatedCase.legalConclusions.length;
-        const durationMs = Date.now() - startedAtMs;
-
-        await patchTaskState(taskId, {
-          status: nextReadiness.eligibleForScoring ? 'approved' : 'pending_review',
-          progress: 100,
-          pageCount: extracted.pageCount,
-          accidentBizId: extractedBizId,
-          extractedFieldsCount,
-          finishedAt: new Date().toISOString(),
-          durationMs,
-          stageLabel: nextReadiness.eligibleForScoring
-            ? '已完成抽取并达到入库标准'
-            : `提取 ${extractedFieldsCount} 项结构化草稿，等待人工审核`,
-        });
-
-        await recordAuditEvent({
-          category: 'task_pipeline',
-          action: '完成 PDF 解析与大模型结构化入库',
-          targetRef: targetTask.caseId,
-          accidentBizId: extractedBizId || undefined,
-          detail: `${targetTask.filename}（${extracted.pageCount} 页）提取 ${extractedFieldsCount} 项，耗时 ${(
-            durationMs / 1000
-          ).toFixed(1)}s`,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : 'PDF 解析或大模型调用失败';
-        const isTimeout =
-          (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) ||
-          /timeout|aborted/i.test(msg);
-        const finalMsg = isTimeout
-          ? '大模型响应超时，可重试解析或前往权限与设置切换响应更快的模型。'
-          : msg;
-
-        await patchTaskState(taskId, {
-          status: 'failed',
-          progress: 100,
-          stageLabel: '流水线执行中断',
-          errorMessage: finalMsg,
-          finishedAt: new Date().toISOString(),
-          durationMs: Date.now() - startedAtMs,
-        });
-
-        await recordAuditEvent({
-          category: 'task_pipeline',
-          action: '任务解析流水线执行失败',
-          targetRef: targetTask.caseId,
-          detail: `${targetTask.filename}：${finalMsg}`,
-        });
-      }
-    },
-    [canUploadAndRun, notifyPermissionBlocked, patchTaskState, recordAuditEvent],
-  );
-
-  // Manual PDF upload task creation (shared by the header and detail workbench)
-  const handleManualUploadPdf = useCallback(
-    async (
-      file: File,
-      startImmediately: boolean,
-      options?: { openDetailAfterCreate?: boolean },
-    ) => {
-      if (!canUploadAndRun) {
-        notifyPermissionBlocked('当前身份无「手动上传与启停解析」权限。');
-        return;
-      }
-
-      const blobUrl = URL.createObjectURL(file);
-      let shaShort = `local-${Date.now().toString(36)}`;
-      let shaFull = '';
-      try {
-        const buf = await file.arrayBuffer();
-        const digest = await crypto.subtle.digest('SHA-256', buf);
-        shaFull = Array.from(new Uint8Array(digest))
-          .map((b) => b.toString(16).padStart(2, '0'))
-          .join('');
-        shaShort = `sha256:${shaFull.slice(0, 16)}`;
-      } catch {
-        // Ignore crypto fallback
-      }
-
-      const seq = casesRef.current.length + 1;
-      const newCaseId = `CASE-MANUAL-${String(seq).padStart(2, '0')}`;
-      const newTaskId = `TASK-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 5)}`;
-      const nowIso = new Date().toISOString();
-      const modelSummary = getActiveModelSummary(aiSettingsRef.current);
-
-      const newCase: CaseDocument = {
-        caseId: newCaseId,
-        documentId: newCaseId.toLowerCase(),
-        title: `${newCaseId} · ${file.name.replace(/\.pdf$/i, '')}`,
-        pilotCode: '手工上传',
-        scenarioSummary: '由人工手动上传的事故认定书材料，支持立即执行或待命后触发 AI 提取。',
-        pdfUrl: blobUrl,
-        sourceFilename: file.name,
-        fileSha256: shaShort,
-        sourceHashFull: shaFull || undefined,
-        pageCount: 1,
-        manualVersion: '试行版 · 首批6份',
-        annotationVersion: 'v1.0',
-        maskPiiOnExport: true,
-        annotatorName: activeIdentityRef.current.name,
-        reviewerName: '第二复核人',
-        adjudicatorName: '',
-        entities: [
-          {
-            id: 'ACC',
-            kind: 'ACC',
-            label: '新建事故材料',
-            subtitle: file.name,
-            roleLabel: '事故主体',
-          },
-        ],
-        fieldRecords: [],
-        legalConclusions: [],
-        relations: [],
-        checklist: {},
-        auditLog: [],
-      };
-
-      const newTask: AnalysisTask = {
-        taskId: newTaskId,
-        source: 'manual_upload',
-        status: startImmediately ? 'queued' : 'idle',
-        progress: startImmediately ? 10 : 0,
-        stageLabel: startImmediately ? '已上传入队，准备开始解析' : '已暂存待命，等待人工点击开始解析',
-        caseId: newCaseId,
-        accidentBizId: '',
+  const handleManualUploadPdf = async (file: File, startImmediately: boolean) => {
+    if (!canUploadAndRun || uploading) return;
+    setUploading(true);
+    setUploadError('');
+    try {
+      const params = new URLSearchParams({
         filename: file.name,
-        pdfUrl: blobUrl,
-        fileSha256: shaShort,
-        fileSizeBytes: file.size,
-        pageCount: 1,
-        modelLabel: `${modelSummary.providerLabel} · ${modelSummary.modelName}`,
-        createdAt: nowIso,
-        updatedAt: nowIso,
-        createdByRole: activeIdentityRef.current.role,
-        createdByName: activeIdentityRef.current.name,
-      };
-
-      setCases((prev) => [...prev, newCase]);
-      setTasks((prev) => [newTask, ...prev]);
-
-      try {
-        const res = await fetch('/api/system/tasks', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            task: newTask,
-            auditDetail: `${file.name}（${startImmediately ? '上传并立即解析' : '暂存待命'}）`,
-          }),
-        });
-        if (res.ok) {
-          const payload = (await res.json()) as { auditEvent?: SystemAuditEvent };
-          if (payload.auditEvent) {
-            setAuditLogs((prev) => [payload.auditEvent!, ...prev].slice(0, 500));
-          }
-        }
-      } catch {
-        await recordAuditEvent({
-          category: 'task_pipeline',
-          action: '手动上传材料创建任务',
-          targetRef: newCaseId,
-          detail: file.name,
-        });
-      }
-
-      if (options?.openDetailAfterCreate) {
-        setActiveCaseId(newCaseId);
-        setSystemView('detail');
-        setActiveTab('fields');
-      }
-
-      if (startImmediately) {
-        await handleRunTaskPipeline(newTaskId, { bypassRoleCheck: true });
-      }
-    },
-    [canUploadAndRun, handleRunTaskPipeline, notifyPermissionBlocked, recordAuditEvent],
-  );
+        startImmediately: String(startImmediately),
+        actorName: activeIdentity.name,
+        actorRole: activeIdentity.role,
+      });
+      const { task, created } = await readApiResult(await fetch(`/api/system/tasks/upload?${params}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/pdf' },
+        body: file,
+      }));
+      setTasks(prev => [task, ...prev.filter(t => t.taskId !== task.taskId)]);
+      setTaskPages([]);
+      if (created === false) notifyPermissionBlocked('这份 PDF 已登记，可在任务列表查看处理进度。');
+      return task as AnalysisTask;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '上传 PDF 失败。';
+      setUploadError(message);
+      if (!uploadDialogRef.current?.open) notifyPermissionBlocked(message);
+    } finally {
+      setUploading(false);
+    }
+  };
 
   // Batch schedule configuration & directory scan handlers
   const handleSaveSchedule = useCallback(
@@ -1354,24 +1148,19 @@ export default function App() {
         }
         if (data.scheduleConfig) setScheduleConfig(data.scheduleConfig);
         if (Array.isArray(data.tasks)) {
+          setTaskPages([]);
           setTasks(data.tasks);
           ensureCasesForTasks(data.tasks);
         }
         if (Array.isArray(data.auditLogs)) setAuditLogs(data.auditLogs);
 
-        const created: AnalysisTask[] = Array.isArray(data.createdTasks) ? data.createdTasks : [];
-        setLastScanMessage(
-          created.length > 0
-            ? `已扫描目录并新增 ${created.length} 条任务（跳过已存在 ${
-                data.skippedExistingCount || 0
-              } 份）。`
-            : `扫描目录完成：共发现 ${data.scannedFileCount || 0} 份 PDF，均已入库（如欲重新演示可点击“强制重扫目录演示批次”）。`,
-        );
-
-        // Execute queued tasks sequentially if autoRunAi is enabled
-        const runnable = created.filter((t) => t.status === 'queued');
-        for (const t of runnable) {
-          await handleRunTaskPipeline(t.taskId, { bypassRoleCheck: true });
+        const count = data.createdTaskCount ?? data.createdTasks?.length ?? 0;
+        const summary = `发现 ${data.scannedFileCount} 份 PDF，新增 ${count} 条任务，跳过已登记 ${data.skippedExistingCount} 份。`;
+        const errors = data.fileErrors;
+        if (errors?.length) {
+          setLastScanError(`${summary} 有 ${errors.length} 份未入库。首项：${errors[0].filename}（${errors[0].reason}）`);
+        } else {
+          setLastScanMessage(summary);
         }
       } catch (err) {
         setLastScanError(err instanceof Error ? err.message : '扫描目录异常');
@@ -1379,7 +1168,7 @@ export default function App() {
         setScanningDirectory(false);
       }
     },
-    [canManageSchedule, ensureCasesForTasks, handleRunTaskPipeline, notifyPermissionBlocked],
+    [canManageSchedule, ensureCasesForTasks, notifyPermissionBlocked],
   );
 
   const handleDeleteTask = useCallback(
@@ -1388,39 +1177,26 @@ export default function App() {
         notifyPermissionBlocked('当前身份无删除任务权限。');
         return;
       }
-      const existing = tasksRef.current.find((t) => t.taskId === taskId);
-      setTasks((prev) => prev.filter((t) => t.taskId !== taskId));
       try {
-        await fetch(
-          `/api/system/tasks/${encodeURIComponent(taskId)}?actorName=${encodeURIComponent(
-            activeIdentityRef.current.name,
-          )}`,
+        const response = await fetch(
+          `/api/system/tasks/${encodeURIComponent(taskId)}?actorName=${encodeURIComponent(activeIdentityRef.current.name)}`,
           { method: 'DELETE' },
         );
-      } catch {
-        // Offline fallback
-      }
-      if (existing) {
-        await recordAuditEvent({
-          category: 'task_pipeline',
-          action: '移除分析任务记录',
-          targetRef: existing.caseId,
-          accidentBizId: existing.accidentBizId || undefined,
-          detail: `删除任务 ${existing.taskId}（${existing.filename}）`,
-        });
+        if (!response.ok) await readApiResult(response);
+        setTasks(prev => prev.filter(t => t.taskId !== taskId));
+      } catch (err) {
+        notifyPermissionBlocked(err instanceof Error ? err.message : '删除任务失败。');
       }
     },
-    [canUploadAndRun, notifyPermissionBlocked, recordAuditEvent],
+    [canUploadAndRun, notifyPermissionBlocked],
   );
 
   const handleImportLocalPdfFromDetail = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
-    await handleManualUploadPdf(file, false, { openDetailAfterCreate: true });
-    setAiError(null);
-    setAiLastResult(null);
-    setAiPanelOpen(true);
+    const task = await handleManualUploadPdf(file, false);
+    if (task) handleOpenCaseDetail(task.caseId);
   };
 
   const arrayBufferToBase64 = (buf: ArrayBuffer): string => {
@@ -1464,16 +1240,6 @@ export default function App() {
         }
       }
 
-      const providerConfig =
-        aiSettings.provider === 'openai_compatible'
-          ? {
-              provider: 'openai_compatible' as const,
-              baseUrl: aiSettings.openai.baseUrl,
-              apiKey: aiSettings.openai.apiKey,
-              model: aiSettings.openai.selectedModel,
-            }
-          : { provider: 'gemini' as const };
-
       const fetchController = new AbortController();
       const clientTimeoutId = window.setTimeout(() => {
         fetchController.abort(new Error('timeout'));
@@ -1492,7 +1258,6 @@ export default function App() {
             pageTexts: pdfPageTexts,
             pdfBase64,
             schemaCatalog: buildAiSchemaCatalogPayload(supplements),
-            providerConfig,
           }),
         });
       } finally {
@@ -1663,8 +1428,9 @@ export default function App() {
           {systemView === 'detail' ? (
             <button
               type="button"
+              disabled={waitingForDraft}
               onClick={() => setActiveTab('export')}
-              className="shrink-0 whitespace-nowrap rounded-md bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800"
+              className="shrink-0 whitespace-nowrap rounded-md bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:bg-slate-300"
             >
               导出 Gold JSON
             </button>
@@ -1673,7 +1439,7 @@ export default function App() {
               type="button"
               disabled={!canUploadAndRun}
               aria-haspopup="dialog"
-              onClick={() => uploadDialogRef.current?.showModal()}
+              onClick={() => { setUploadError(''); uploadDialogRef.current?.showModal(); }}
               className="shrink-0 whitespace-nowrap rounded-md bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:bg-slate-300"
             >
               上传 PDF 分析
@@ -1736,14 +1502,15 @@ export default function App() {
         className="m-auto w-[min(26rem,calc(100%-2rem))] rounded-lg border border-slate-200 bg-white p-5 text-slate-900 shadow-lg backdrop:bg-slate-900/35"
       >
         <form
-          onSubmit={(e) => {
+          onSubmit={async (e) => {
             e.preventDefault();
             const data = new FormData(e.currentTarget);
             const file = data.get('pdf');
             if (!canUploadAndRun || !(file instanceof File) || !file.name) return;
-            uploadDialogRef.current?.close();
-            setSystemView('tasks');
-            void handleManualUploadPdf(file, data.get('mode') === 'analyze');
+            if (await handleManualUploadPdf(file, data.get('mode') === 'analyze')) {
+              uploadDialogRef.current?.close();
+              setSystemView('tasks');
+            }
           }}
         >
           <div className="flex items-center justify-between gap-3 border-b border-slate-100 pb-3">
@@ -1778,6 +1545,7 @@ export default function App() {
               <option value="idle">暂存待命，稍后解析</option>
             </select>
           </label>
+          {uploadError && <p role="alert" className="mt-3 text-xs text-red-700">{uploadError}</p>}
           <div className="mt-4 flex items-center justify-between gap-3">
             <button
               type="button"
@@ -1791,10 +1559,10 @@ export default function App() {
             </button>
             <button
               type="submit"
-              disabled={!canUploadAndRun}
+              disabled={!canUploadAndRun || uploading}
               className="rounded-md bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:bg-slate-300"
             >
-              创建任务
+              {uploading ? '正在上传…' : '创建任务'}
             </button>
           </div>
         </form>
@@ -1826,7 +1594,7 @@ export default function App() {
             />
             <button
               type="button"
-              disabled={!canUploadAndRun}
+              disabled={!canUploadAndRun || uploading}
               onClick={() => fileInputRef.current?.click()}
               className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-45"
             >
@@ -1836,7 +1604,7 @@ export default function App() {
 
             <button
               type="button"
-              disabled={!canEditCase}
+              disabled={!canEditCase || waitingForDraft}
               onClick={() => setAiPanelOpen((v) => !v)}
               aria-expanded={aiPanelOpen}
               className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
@@ -1858,6 +1626,7 @@ export default function App() {
             <span aria-hidden="true">·</span>
             <button
               type="button"
+              disabled={waitingForDraft}
               onClick={() =>
                 handleOpenAcceptanceWithStatus(pendingItemsCount > 0 ? 'pending_action' : 'all')
               }
@@ -1911,7 +1680,13 @@ export default function App() {
       {systemView === 'tasks' && (
         <main className="min-h-0 flex-1 overflow-y-auto">
           <TaskCenterPanel
-            tasks={tasks}
+            tasks={displayedTasks}
+            pageNumber={taskPages.length + 1}
+            hasOlder={Boolean(nextCursor)}
+            loadingPage={loadingPage}
+            taskListError={taskListError}
+            onOlder={() => { if (nextCursor) setTaskPages(prev => [...prev, nextCursor]); }}
+            onNewer={() => setTaskPages(prev => prev.slice(0, -1))}
             scheduleConfig={scheduleConfig}
             canManageSchedule={canManageSchedule}
             canUploadAndRun={canUploadAndRun}
@@ -1970,10 +1745,9 @@ export default function App() {
             subTabRequest={systemSubTabRequest}
             onSwitchIdentity={(identityId) => setActiveIdentityId(identityId)}
             onUpdatePermissions={handleUpdatePermissions}
-            onChangeAiSettings={(next) => {
-              setAiSettings(next);
-              setAiError(null);
-            }}
+            settingsReady={settingsReady}
+            hasServerKey={hasServerKey}
+            onSaveAiSettings={handleSaveAiSettings}
             onJumpToPreanalyze={() => {
               setSystemView('detail');
               setActiveTab('fields');
@@ -1993,7 +1767,7 @@ export default function App() {
               currentPage={currentPdfPage}
               onPageChange={setCurrentPdfPage}
               onPageCountDetected={(count) => {
-                if (count > 0 && count !== activeCase.pageCount) {
+                if (!waitingForDraft && count > 0 && count !== activeCase.pageCount) {
                   updateActiveCase((prev) => ({ ...prev, pageCount: count }));
                 }
               }}
@@ -2008,6 +1782,18 @@ export default function App() {
 
           {/* Right Pane: Structured Annotation & Workflow Views */}
           <div className="flex min-h-0 flex-col overflow-y-auto bg-slate-50 lg:col-span-7">
+            {waitingForDraft && activeTask ? (
+              <section aria-live="polite" className="m-5 rounded-lg border border-slate-200 bg-white p-5 text-sm">
+                <h2 className="font-semibold text-slate-900">后台解析任务</h2>
+                <p className="mt-2 text-slate-700">{draftError || activeTask.errorMessage || (draftTaskId ? '正在加载案件草稿…' : activeTask.stageLabel)}</p>
+                {draftError && <button type="button" onClick={() => setDraftAttempt(n => n + 1)} className="mt-3 text-xs font-medium text-blue-700">重新加载草稿</button>}
+                {canUploadAndRun && (activeTask.status === 'idle' || activeTask.status === 'failed') && (
+                  <button type="button" onClick={() => handleRunTaskPipeline(activeTask.taskId)} className="mt-3 rounded bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-800">
+                    {activeTask.status === 'idle' ? '开始解析' : '重试解析'}
+                  </button>
+                )}
+              </section>
+            ) : <>
             {/* Case Detail Sub-Tab Switcher + Document Identity Strip */}
             <div className="border-b border-slate-200 bg-white px-5 pt-2">
               <div className="flex flex-wrap items-center justify-between gap-2 pb-2 text-xs text-slate-500">
@@ -2312,6 +2098,7 @@ export default function App() {
                 onBatchApproveDrafts={handleBatchApproveDrafts}
               />
             )}
+            </>}
           </div>
         </main>
       )}

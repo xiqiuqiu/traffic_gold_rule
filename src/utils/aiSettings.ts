@@ -222,11 +222,3 @@ export function loadAiProviderSettings(): AiProviderSettings {
     return DEFAULT_AI_PROVIDER_SETTINGS;
   }
 }
-
-export function saveAiProviderSettings(settings: AiProviderSettings): void {
-  try {
-    localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
-  } catch {
-    // Ignore storage quota errors
-  }
-}

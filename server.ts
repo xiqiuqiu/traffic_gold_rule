@@ -2,22 +2,18 @@ import 'dotenv/config';
 import fs from 'node:fs/promises';
 import express from 'express';
 import path from 'node:path';
+import { PdfInputError, initPdfQueue, listPdfTasks, startPdfTask, deletePdfTask, enqueuePdf, recentPdfAuditEvents, getOriginalPath, getPdfTask, getPdfDraft, MAX_PDF_BYTES } from './src/server/pdfQueue';
+import { EXTENDED_ROLE_META } from './src/utils/systemEngine';
 import { fileURLToPath } from 'node:url';
-import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
-import {
-  normalizeOpenAiBaseUrl,
-  parseOpenAiModelsPayload,
-  validateOpenAiBaseUrl,
-} from './src/utils/aiSettings';
-import {
-  extractOpenAiSseDeltaText,
-  isTimeoutError,
-  parseStructuredModelJson,
-} from './src/utils/aiResponseParser';
+import { createServer } from 'node:http';
+import { normalizeOpenAiBaseUrl, validateOpenAiBaseUrl } from './src/utils/aiSettings';
+import { isTimeoutError } from './src/utils/aiResponseParser';
+import { ModelRequestError, preanalyzePdf, probeOpenAiModels } from './src/server/modelService';
+import { initModelSettings, loadWorkerModelSettings, getModelConfigVersion, getPublicSettings, saveModelSettings } from './src/server/modelSettings';
 import {
   appendSystemAuditEvent,
   loadSystemState,
-  resolveSafeScanDirectory,
+  resolveSafeScanDirectory, readScanFile, runDueScan, initScanSchedule,
   saveSystemState,
   scanServerDirectoryForTasks,
 } from './src/server/systemStore';
@@ -33,487 +29,17 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT) || 3000;
 
-interface SchemaDescriptorInput {
-  fieldCode: string;
-  fieldName: string;
-  groupCode: string;
-  applicableKinds: string[];
-  valueType: string;
-  allowMultiple: boolean;
-  isLegalOrRelation: boolean;
-  options: string[];
-  synonyms: string;
-  definition: string;
-}
-
-interface ProviderConfigInput {
-  provider?: 'gemini' | 'openai_compatible';
-  baseUrl?: string;
-  apiKey?: string;
-  model?: string;
-}
-
-interface PreanalyzeRequestBody {
-  caseId?: string;
-  sourceFilename?: string;
-  pageCount?: number;
-  pageTexts?: Record<string, string>;
-  pdfBase64?: string;
-  schemaCatalog?: SchemaDescriptorInput[];
-  providerConfig?: ProviderConfigInput;
-}
-
-function createGeminiClient() {
-  const apiKey = (process.env.GEMINI_API_KEY || '').trim();
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    return null;
-  }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-}
-
-function buildSystemInstruction(): string {
-  return [
-    '你是一名严谨的道路交通事故认定书结构化信息抽取助手，负责为人工校验工作台生成高质量、严格可溯源的初稿。',
-    '核心原则：',
-    '1. 忠实于文书原文，严禁凭空补推断或修改法律否定词；',
-    '2. 先识别文书中的所有对象实体：ACC（整起事故，固定编号 ACC）、P01+（参与方/驾驶人/行人/乘客）、V01+（涉事车辆）、E01+（阶段碰撞事件）、R01+（事发道路）、I01+（交叉路口）、O01+（交警大队或单位组织）；',
-    '3. 为每个适用实体提取 G01–G06 普通事实字段到 fieldRecords 数组：',
-    '   - 严格使用给定的 fieldCode，且 entityId 的类型必须匹配字段的 applicableKinds；',
-    '   - presenceStatus 仅限：present（有记载）、explicit_negative（明确否定，如“未超速”“无伤亡”）、not_mentioned（未提及）、not_applicable（不适用）、unreadable（无法辨认）、source_conflict（来源冲突）、needs_review（待判断）；',
-    '   - 若某字段文书中未提到，可以省略或标为 not_mentioned（此时 rawValue 必须为空字符串，normalizedValues 必须为空数组）；',
-    '   - 若 presenceStatus 为 present 或 explicit_negative，必须保留原文 rawValue，并给出至少 1 条准确的页码 page（从 1 开始）与最短原文摘录 quote；',
-    '   - normalizedValues 必须尽量对齐字段给定的受控词表 options（单选字段最多 1 个元素，多选字段可多个元素）；',
-    '4. 如文书包含违法行为、事故形成原因及责任划分，可同步提取至 legalConclusions 数组（category 为 violation / cause / liability）。',
-  ].join('\n');
-}
-
-const PREANALYZE_RESPONSE_SCHEMA = {
-  type: Type.OBJECT,
-  properties: {
-    summary: {
-      type: Type.STRING,
-      description: '一句话概括本起事故文书的核心事实与已提取实体概览。',
-    },
-    entities: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          id: {
-            type: Type.STRING,
-            description: '对象编号：ACC、P01、P02、V01、E01、R01、I01、O01 等。',
-          },
-          kind: {
-            type: Type.STRING,
-            description: '对象类别：ACC | P | V | E | R | I | O',
-          },
-          label: {
-            type: Type.STRING,
-            description: '主体名称或简明标识（如姓名、号牌、路名、事故概括）。',
-          },
-          subtitle: {
-            type: Type.STRING,
-            description: '补充身份、车型或角色描述。',
-          },
-          roleLabel: {
-            type: Type.STRING,
-            description: '交通角色标签（如机动车驾驶人、行人、小型普通客车）。',
-          },
-        },
-        required: ['id', 'kind', 'label'],
-      },
-    },
-    fieldRecords: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          entityId: {
-            type: Type.STRING,
-            description: '归属对象编号，必须与 entities 中的 id 对应。',
-          },
-          fieldCode: {
-            type: Type.STRING,
-            description: '字段编码，如 D01.F001、D07.F041 等。',
-          },
-          presenceStatus: {
-            type: Type.STRING,
-            description:
-              'present | explicit_negative | not_mentioned | not_applicable | unreadable | source_conflict | needs_review',
-          },
-          rawValue: {
-            type: Type.STRING,
-            description: '保留文书原文表达；未提及/不适用时留空。',
-          },
-          normalizedValues: {
-            type: Type.ARRAY,
-            items: { type: Type.STRING },
-            description: '对齐受控词表或标准化取值后的结果数组。',
-          },
-          evidences: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                page: { type: Type.INTEGER },
-                quote: { type: Type.STRING },
-              },
-              required: ['page', 'quote'],
-            },
-          },
-        },
-        required: ['entityId', 'fieldCode', 'presenceStatus', 'rawValue', 'normalizedValues', 'evidences'],
-      },
-    },
-    legalConclusions: {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          category: {
-            type: Type.STRING,
-            description: 'violation | cause | liability',
-          },
-          subjectId: {
-            type: Type.STRING,
-            description: '责任或违法主体编号（P01+ 或 O01+）。',
-          },
-          eventId: {
-            type: Type.STRING,
-            description: '关联事件编号（E01+，无则空字符串）。',
-          },
-          presenceStatus: {
-            type: Type.STRING,
-          },
-          rawText: {
-            type: Type.STRING,
-          },
-          lawArticle: {
-            type: Type.STRING,
-          },
-          conclusionLabel: {
-            type: Type.STRING,
-          },
-          evidences: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                page: { type: Type.INTEGER },
-                quote: { type: Type.STRING },
-              },
-              required: ['page', 'quote'],
-            },
-          },
-        },
-        required: ['category', 'subjectId', 'presenceStatus', 'rawText', 'conclusionLabel', 'evidences'],
-      },
-    },
-  },
-  required: ['summary', 'entities', 'fieldRecords'],
-};
-
-function parseGeminiJson(rawText: string) {
-  return parseStructuredModelJson(rawText);
-}
-
-function buildOpenAiJsonOutputInstruction(): string {
-  return [
-    buildSystemInstruction(),
-    '',
-    '【强制 JSON 输出格式要求】',
-    '请严格只输出一个合法 JSON 对象（不要输出任何 Markdown 代码块围栏或额外说明），包含以下字段：',
-    '- summary: string（一句话概括核心事实与实体概览）',
-    '- entities: Array<{ id: string, kind: "ACC"|"P"|"V"|"E"|"R"|"I"|"O", label: string, subtitle?: string, roleLabel?: string }>',
-    '- fieldRecords: Array<{ entityId: string, fieldCode: string, presenceStatus: string, rawValue: string, normalizedValues: string[], evidences: Array<{ page: number, quote: string }> }>',
-    '- legalConclusions?: Array<{ category: "violation"|"cause"|"liability", subjectId: string, eventId?: string, presenceStatus: string, rawText: string, lawArticle?: string, conclusionLabel: string, evidences: Array<{ page: number, quote: string }> }>',
-  ].join('\n');
-}
-
-function buildOpenAiHeaders(apiKey: string): Record<string, string> {
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json',
-  };
-  const token = apiKey.trim();
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  return headers;
-}
-
-function extractOpenAiMessageText(payload: unknown): string {
-  if (!payload || typeof payload !== 'object') return '';
-  const choices = (payload as { choices?: unknown }).choices;
-  if (!Array.isArray(choices) || choices.length === 0) return '';
-  const message = (choices[0] as { message?: { content?: unknown } })?.message;
-  if (!message) return '';
-  if (typeof message.content === 'string') return message.content;
-  if (Array.isArray(message.content)) {
-    return message.content
-      .map((part) => {
-        if (typeof part === 'string') return part;
-        if (part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string') {
-          return (part as { text: string }).text;
-        }
-        return '';
-      })
-      .join('');
-  }
-  return '';
-}
-
-async function probeOpenAiModels(baseUrlInput: string, apiKey: string) {
-  const normalized = normalizeOpenAiBaseUrl(baseUrlInput);
-  const candidates = /\/v\d+(beta)?$/i.test(normalized)
-    ? [normalized]
-    : [normalized, `${normalized}/v1`];
-
-  let lastStatus = 0;
-  let lastErrorText = '';
-  let resolvedBaseUrl = normalized;
-
-  for (let i = 0; i < candidates.length; i += 1) {
-    const base = candidates[i];
-    const target = `${base}/models`;
-    const res = await fetch(target, {
-      method: 'GET',
-      headers: buildOpenAiHeaders(apiKey),
-      signal: AbortSignal.timeout(15000),
-    });
-
-    if (res.ok) {
-      const json = await res.json();
-      const models = parseOpenAiModelsPayload(json);
-      resolvedBaseUrl = base;
-      return { models, resolvedBaseUrl };
-    }
-
-    lastStatus = res.status;
-    lastErrorText = await res.text().catch(() => '');
-    if (res.status === 404 && i < candidates.length - 1) {
-      continue;
-    }
-    break;
-  }
-
-  if (lastStatus === 401 || lastStatus === 403) {
-    throw new Error(`API Key / Token 鉴权失败（HTTP ${lastStatus}），请检查密钥是否有效。`);
-  }
-  if (lastStatus === 404) {
-    throw new Error('接口地址未找到 /models 端点（HTTP 404），请确认 Base URL 是否包含正确路径（如 /v1）。');
-  }
-  const detail = lastErrorText.slice(0, 180).trim();
-  throw new Error(
-    `探测模型失败（HTTP ${lastStatus || 'ERR'}）${detail ? `：${detail}` : ''}`,
-  );
-}
-
-async function readOpenAiResponseContent(
-  res: Response,
-  onActivity: () => void,
-): Promise<string> {
-  const contentType = (res.headers.get('content-type') || '').toLowerCase();
-  if (!contentType.includes('text/event-stream') || !res.body) {
-    const payload = await res.json();
-    onActivity();
-    return extractOpenAiMessageText(payload);
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let accumulated = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    onActivity();
-    buffer += decoder.decode(value, { stream: true });
-
-    let newlineIdx = buffer.indexOf('\n');
-    while (newlineIdx !== -1) {
-      const line = buffer.slice(0, newlineIdx);
-      buffer = buffer.slice(newlineIdx + 1);
-      const piece = extractOpenAiSseDeltaText(line);
-      if (piece) {
-        accumulated += piece;
-      }
-      newlineIdx = buffer.indexOf('\n');
-    }
-  }
-
-  buffer += decoder.decode();
-  if (buffer.trim()) {
-    const piece = extractOpenAiSseDeltaText(buffer);
-    if (piece) {
-      accumulated += piece;
-    } else if (!accumulated && buffer.trim().startsWith('{')) {
-      // Handle gateways returning raw JSON despite text/event-stream or missing content-type
-      try {
-        const fallbackJson = JSON.parse(buffer.trim());
-        const extracted = extractOpenAiMessageText(fallbackJson);
-        if (extracted) return extracted;
-      } catch {
-        // Ignore partial non-JSON trailing line
-      }
-    }
-  }
-
-  return accumulated;
-}
-
-async function callOpenAiPreanalyze(params: {
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-  promptText: string;
-}) {
-  const normalized = normalizeOpenAiBaseUrl(params.baseUrl);
-  const baseCandidates = /\/v\d+(beta)?$/i.test(normalized)
-    ? [normalized]
-    : [normalized, `${normalized}/v1`];
-
-  const requestBodyBase = {
-    model: params.model.trim(),
-    temperature: 0.1,
-    messages: [
-      { role: 'system', content: buildOpenAiJsonOutputInstruction() },
-      { role: 'user', content: params.promptText },
-    ],
-  };
-
-  const controller = new AbortController();
-  const IDLE_TIMEOUT_MS = 120_000;
-  const TOTAL_TIMEOUT_MS = 240_000;
-
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
-  const resetIdleTimer = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      controller.abort(new Error('The operation was aborted due to timeout'));
-    }, IDLE_TIMEOUT_MS);
-  };
-  const totalTimer = setTimeout(() => {
-    controller.abort(new Error('The operation was aborted due to timeout'));
-  }, TOTAL_TIMEOUT_MS);
-
-  resetIdleTimer();
-
-  try {
-    for (let i = 0; i < baseCandidates.length; i += 1) {
-      const endpoint = `${baseCandidates[i]}/chat/completions`;
-      let useStream = true;
-      let useJsonFormat = true;
-
-      const sendRequest = (stream: boolean, jsonFormat: boolean) => {
-        const payload: Record<string, unknown> = {
-          ...requestBodyBase,
-          stream,
-        };
-        if (jsonFormat) {
-          payload.response_format = { type: 'json_object' };
-        }
-        return fetch(endpoint, {
-          method: 'POST',
-          headers: buildOpenAiHeaders(params.apiKey),
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-      };
-
-      let res = await sendRequest(useStream, useJsonFormat);
-      resetIdleTimer();
-
-      if (res.status === 400 || res.status === 501) {
-        const errBody = await res.text().catch(() => '');
-        if (/stream/i.test(errBody)) {
-          useStream = false;
-        }
-        if (/response_format|json_object/i.test(errBody)) {
-          useJsonFormat = false;
-        }
-        if (!useStream || !useJsonFormat) {
-          res = await sendRequest(useStream, useJsonFormat);
-          resetIdleTimer();
-        } else {
-          throw new Error(`OpenAI 兼容接口请求参数错误（HTTP ${res.status}）：${errBody.slice(0, 200)}`);
-        }
-      }
-
-      if (res.status === 404 && i < baseCandidates.length - 1) {
-        continue;
-      }
-
-      if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        if (res.status === 401 || res.status === 403) {
-          throw new Error(`OpenAI 兼容接口鉴权失败（HTTP ${res.status}），请核对模型设置中的 Token / Key。`);
-        }
-        if (res.status === 429) {
-          throw new Error('OpenAI 兼容接口触发限流或配额不足（HTTP 429），请稍后重试。');
-        }
-        throw new Error(
-          `OpenAI 兼容接口返回错误（HTTP ${res.status}）${errText ? `：${errText.slice(0, 200)}` : ''}`,
-        );
-      }
-
-      const contentText = await readOpenAiResponseContent(res, resetIdleTimer);
-      if (!contentText.trim()) {
-        throw new Error('所选 OpenAI 兼容模型未返回文本内容，请检查模型能力或稍后重试。');
-      }
-      return parseGeminiJson(contentText);
-    }
-
-    throw new Error('无法连接到 OpenAI 兼容接口的 /chat/completions 端点，请检查 Base URL。');
-  } finally {
-    if (idleTimer) clearTimeout(idleTimer);
-    clearTimeout(totalTimer);
-  }
-}
-
-async function callGeminiWithRetry(
-  ai: GoogleGenAI,
-  contents: Parameters<GoogleGenAI['models']['generateContent']>[0]['contents'],
-) {
-  const maxAttempts = 2;
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    try {
-      return await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents,
-        config: {
-          systemInstruction: buildSystemInstruction(),
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          responseMimeType: 'application/json',
-          responseSchema: PREANALYZE_RESPONSE_SCHEMA,
-          abortSignal: AbortSignal.timeout(120_000),
-        },
-      });
-    } catch (err) {
-      lastErr = err;
-      const msg = err instanceof Error ? err.message : String(err);
-      const isTransient = /429|500|503|RESOURCE_EXHAUSTED|UNAVAILABLE/i.test(msg);
-      if (attempt < maxAttempts && isTransient) {
-        await new Promise((r) => setTimeout(r, 800));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw lastErr;
+async function mergedAuditEvents(legacy: SystemAuditEvent[]) {
+  return [...await recentPdfAuditEvents(), ...legacy]
+    .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 500);
 }
 
 async function startServer() {
+  await initPdfQueue();
+  await initModelSettings();
+  await initScanSchedule();
   const app = express();
+  const httpServer = createServer(app);
   app.use(express.json({ limit: '30mb' }));
 
   app.get('/api/health', (_req, res) => {
@@ -523,7 +49,8 @@ async function startServer() {
   app.get('/api/system/bootstrap', async (_req, res) => {
     try {
       const state = await loadSystemState();
-      res.json(state);
+      const page = await listPdfTasks();
+      res.json({ ...state, auditLogs: await mergedAuditEvents(state.auditLogs), nextCursor: page.nextCursor, tasks: [...page.tasks, ...state.tasks] });
     } catch (err) {
       res.status(500).json({ error: err instanceof Error ? err.message : '加载系统状态失败' });
     }
@@ -546,6 +73,11 @@ async function startServer() {
         filePattern:
           (body.scheduleConfig?.filePattern ?? state.scheduleConfig.filePattern).trim() || '*.pdf',
       };
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(nextSchedule.dailyTime) ||
+          typeof nextSchedule.enabled !== 'boolean' || typeof nextSchedule.autoRunAi !== 'boolean') {
+        res.status(400).json({ error: '调度时间须为 HH:MM，并指定是否启用及自动执行。' });
+        return;
+      }
       const auditEvent: SystemAuditEvent = {
         id: `AUD-${Date.now().toString(36)}`,
         timestamp: new Date().toISOString(),
@@ -586,11 +118,15 @@ async function startServer() {
         actorName: body.actorName || '系统管理员',
       });
       const updated = await loadSystemState();
+      const page = await listPdfTasks();
       res.json({
         ...result,
+        createdTaskCount: result.createdTasks.length,
+        createdTasks: result.createdTasks.slice(0, 100),
+        nextCursor: page.nextCursor,
         scheduleConfig: updated.scheduleConfig,
-        tasks: updated.tasks,
-        auditLogs: updated.auditLogs,
+        tasks: [...page.tasks, ...updated.tasks],
+        auditLogs: await mergedAuditEvents(updated.auditLogs),
       });
     } catch (err) {
       res.status(400).json({ error: err instanceof Error ? err.message : '扫描服务器目录失败' });
@@ -609,7 +145,7 @@ async function startServer() {
         resolveSafeScanDirectory(state.scheduleConfig.scanDirectory),
         resolveSafeScanDirectory('./public/assets/aistudio'),
       ];
-      const targetPath = path.resolve(rawPath);
+      const targetPath = await fs.realpath(path.resolve(rawPath));
       const isAllowed = allowedDirs.some(
         (dir) => targetPath === dir || targetPath.startsWith(dir + path.sep),
       );
@@ -625,38 +161,90 @@ async function startServer() {
     }
   });
 
-  app.post('/api/system/tasks', async (req, res) => {
+  app.get('/api/system/tasks', async (req, res) => {
     try {
-      const body = (req.body || {}) as { task?: AnalysisTask; auditDetail?: string };
-      if (!body.task?.taskId) {
-        res.status(400).json({ error: '缺少任务主体数据' });
+      const before = typeof req.query.before === 'string' ? req.query.before : undefined;
+      const page = await listPdfTasks({ before });
+      const legacy = before ? [] : (await loadSystemState()).tasks;
+      res.json({ tasks: [...page.tasks, ...legacy], nextCursor: page.nextCursor });
+    } catch (err) {
+      res.status(err instanceof RangeError ? 400 : 503).json({ error: '无法查询任务队列' });
+    }
+  });
+
+  app.get('/api/system/tasks/:taskId', async (req, res) => {
+    try {
+      const task = await getPdfTask(req.params.taskId);
+      if (!task) { res.status(404).json({ error: '未找到任务' }); return; }
+      res.json({ task });
+    } catch { res.status(503).json({ error: '无法读取任务' }); }
+  });
+
+  app.post('/api/system/tasks/upload', express.raw({ type: 'application/pdf', limit: MAX_PDF_BYTES }), async (req, res) => {
+    const { filename, startImmediately, actorName, actorRole } = req.query;
+    if (!Buffer.isBuffer(req.body) || typeof filename !== 'string' || filename.length > 255 ||
+        !['true', 'false'].includes(String(startImmediately)) || typeof actorRole !== 'string' ||
+        !Object.hasOwn(EXTENDED_ROLE_META, actorRole) || typeof actorName !== 'string' || !actorName.trim()) {
+      res.status(400).json({ error: '缺少有效 PDF、操作者或执行方式' });
+      return;
+    }
+    try {
+      const result = await enqueuePdf(req.body, {
+        filename, source: 'manual_upload', startImmediately: startImmediately === 'true',
+        actorName, actorRole: actorRole as ExtendedRole, modelConfigVersion: await getModelConfigVersion(),
+      });
+      res.status(result.created ? 201 : 200).json(result);
+    } catch (err) {
+      res.status(err instanceof PdfInputError ? 400 : 503).json({ error: err instanceof Error ? err.message : '原件入库失败' });
+    }
+  });
+
+  app.get('/api/system/originals/:hash', async (req, res) => {
+    try {
+      const original = await getOriginalPath(req.params.hash);
+      if (!original) { res.status(404).end(); return; }
+      res.set('Cache-Control', 'private, no-cache').type('application/pdf').sendFile(original, { dotfiles: 'allow' });
+    } catch {
+      res.status(503).json({ error: '无法读取原件' });
+    }
+  });
+
+  app.post('/api/system/tasks/:taskId/start', async (req, res) => {
+    try {
+      const id = req.params.taskId;
+      const version = await getModelConfigVersion();
+      if (id.startsWith('PDF-')) {
+        const task = await startPdfTask(id, version);
+        if (!task) { res.status(404).json({ error: '未找到任务' }); return; }
+        res.json({ task });
         return;
       }
       const state = await loadSystemState();
-      const nextTasks = [
-        body.task,
-        ...state.tasks.filter((t) => t.taskId !== body.task!.taskId),
-      ];
-      const auditEvent: SystemAuditEvent = {
-        id: `AUD-${Date.now().toString(36)}`,
-        timestamp: new Date().toISOString(),
-        category: 'task_pipeline',
-        actorRole: body.task.createdByRole,
-        actorName: body.task.createdByName,
-        action: body.task.source === 'manual_upload' ? '手动上传材料创建任务' : '创建批量分析任务',
-        targetRef: body.task.caseId,
-        accidentBizId: body.task.accidentBizId || undefined,
-        detail: body.auditDetail || `${body.task.filename}（${body.task.stageLabel}）`,
-      };
-      await saveSystemState({
-        ...state,
-        tasks: nextTasks,
-        auditLogs: [auditEvent, ...state.auditLogs].slice(0, 500),
+      const old = state.tasks.find(t => t.taskId === id);
+      if (!old) { res.status(404).json({ error: '未找到任务' }); return; }
+      if (!old.filePath) { res.status(409).json({ error: '此历史任务缺少持久化原件，请重新上传 PDF。' }); return; }
+      const source = await fs.realpath(old.filePath);
+      const dirs = [resolveSafeScanDirectory(state.scheduleConfig.scanDirectory), path.resolve('public/assets/aistudio')];
+      if (!dirs.some(d => source.startsWith(d + path.sep)) || !/\.pdf$/i.test(source)) {
+        res.status(409).json({ error: '历史文件已不在扫描目录内，请重新上传 PDF。' }); return;
+      }
+      const { task } = await enqueuePdf(await readScanFile(source), {
+        source: old.source === 'manual_upload' ? 'manual_upload' : 'scheduled_batch',
+        filename: old.filename, filePath: source, actorRole: old.createdByRole,
+        actorName: old.createdByName, startImmediately: true, modelConfigVersion: version,
       });
-      res.json({ task: body.task, auditEvent });
+      res.json({ task: await startPdfTask(task.taskId, version) });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : '创建任务失败' });
+      res.status(409).json({ error: err instanceof Error ? err.message : '请重新上传 PDF 原件。' });
     }
+  });
+
+  app.get('/api/system/tasks/:taskId/draft', async (req, res) => {
+    try {
+      const draft = await getPdfDraft(req.params.taskId);
+      if (!draft) { res.status(404).json({ error: '草稿尚不可用' }); return; }
+      res.json({ draft });
+    } catch { res.status(503).json({ error: '无法读取草稿' }); }
   });
 
   app.patch('/api/system/tasks/:taskId', async (req, res) => {
@@ -685,6 +273,10 @@ async function startServer() {
   app.delete('/api/system/tasks/:taskId', async (req, res) => {
     try {
       const { taskId } = req.params;
+      if (taskId.startsWith('PDF-')) {
+        res.json({ ok: await deletePdfTask(taskId) });
+        return;
+      }
       const state = await loadSystemState();
       const existing = state.tasks.find((t) => t.taskId === taskId);
       const nextTasks = state.tasks.filter((t) => t.taskId !== taskId);
@@ -702,7 +294,7 @@ async function startServer() {
       }
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : '删除任务失败' });
+      res.status(409).json({ error: err instanceof Error ? err.message : '删除任务失败' });
     }
   });
 
@@ -764,6 +356,23 @@ async function startServer() {
     }
   });
 
+  app.get('/api/ai/settings', async (_req, res) => {
+    try { res.json(await getPublicSettings()); }
+    catch { res.status(503).json({ error: '无法加载服务端模型设置' }); }
+  });
+  app.put('/api/ai/settings', async (req, res) => {
+    try {
+      const { rolePermissions } = await loadSystemState();
+      if (!rolePermissions[req.body?.actorRole as ExtendedRole]?.['system:audit_permissions']) {
+        res.status(403).json({ error: '当前身份没有管理模型配置的权限' }); return;
+      }
+      res.json(await saveModelSettings(req.body?.settings, req.body?.initializeOnly === true));
+    }
+    catch (err) {
+      res.status(400).json({ error: err instanceof Error ? err.message : '无法保存模型设置' });
+    }
+  });
+
   app.post('/api/ai/models', async (req, res) => {
     try {
       const body = (req.body || {}) as { baseUrl?: string; apiKey?: string };
@@ -776,7 +385,12 @@ async function startServer() {
         return;
       }
 
-      const result = await probeOpenAiModels(baseUrl, apiKey);
+      const saved = await loadWorkerModelSettings();
+      const role = req.body?.actorRole as ExtendedRole | undefined;
+      const allowed = role && (await loadSystemState()).rolePermissions[role]?.['system:audit_permissions'];
+      if (role && !allowed) { res.status(403).json({ error: '当前身份没有探测模型的权限' }); return; }
+      const sameEndpoint = allowed && normalizeOpenAiBaseUrl(baseUrl) === saved.openai.baseUrl;
+      const result = await probeOpenAiModels(baseUrl, apiKey || (sameEndpoint ? saved.openai.apiKey : ''));
       if (result.models.length === 0) {
         res.status(404).json({
           error: '接口已连通，但未返回任何可用模型列表，可检查 Token 权限或手动指定模型名称。',
@@ -804,119 +418,20 @@ async function startServer() {
 
   app.post('/api/ai/preanalyze', async (req, res) => {
     try {
-      const body = (req.body || {}) as PreanalyzeRequestBody;
-      const providerConfig = body.providerConfig;
-      const useOpenAi = providerConfig?.provider === 'openai_compatible';
-
-      const pageTexts = body.pageTexts || {};
-      const sortedPages = Object.keys(pageTexts)
-        .map((k) => Number(k))
-        .filter((n) => Number.isFinite(n) && n >= 1)
-        .sort((a, b) => a - b);
-
-      const formattedPageBlocks = sortedPages
-        .map((p) => `=== 第 ${p} 页 ===\n${(pageTexts[String(p)] || '').trim()}`)
-        .filter((block) => block.length > 20)
-        .join('\n\n');
-
-      const hasTextContent = formattedPageBlocks.replace(/\s+/g, '').length >= 30;
-      const hasPdfBinary = typeof body.pdfBase64 === 'string' && body.pdfBase64.length > 20;
-
-      if (!hasTextContent && !hasPdfBinary) {
-        res.status(400).json({
-          error: '当前 PDF 尚未读取到可解析内容，请确认 PDF 已加载完成或重新上传后重试。',
-        });
-        return;
+      const body = req.body || {};
+      const settings = await loadWorkerModelSettings();
+      // Older workbench clients can send an explicit provider for a single request.
+      const override = body.providerConfig;
+      if (override) {
+        settings.provider = override.provider === 'openai_compatible' ? 'openai_compatible' : 'gemini';
+        settings.openai = { ...settings.openai, baseUrl: override.baseUrl || '', apiKey: override.apiKey || '', selectedModel: override.model || '' };
       }
-
-      const schemaSummary = Array.isArray(body.schemaCatalog)
-        ? [
-            ...body.schemaCatalog
-              .filter((f) => !f.isLegalOrRelation)
-              .map((f) => {
-                const opts = f.options?.length ? ` | 选项:[${f.options.join(',')}]` : '';
-                const syns = f.synonyms ? ` | 参考:${f.synonyms.slice(0, 60)}` : '';
-                return `- ${f.fieldCode}(${f.fieldName},适用:${f.applicableKinds.join('/')},${f.allowMultiple ? '多选' : '单选'})${opts}${syns}`;
-              }),
-            ...body.schemaCatalog
-              .filter((f) => f.groupCode === 'G08' && f.options?.length)
-              .map(
-                (f) =>
-                  `- [legalConclusions ${f.fieldCode}·${f.fieldName}] 推荐标准结论:[${f.options.join(',')}]`,
-              ),
-          ].join('\n')
-        : '';
-
-      const promptText = [
-        `样本文件: ${body.sourceFilename || body.caseId || '未命名PDF'}（共 ${body.pageCount || sortedPages.length || 1} 页）`,
-        '',
-        '【目标字段定义与受控词表】',
-        schemaSummary || '请按道路交通事故认定书标准字段体系（G01-G06）提取对象与字段记录。',
-        '',
-        hasTextContent
-          ? `【PDF 分页提取文本】\n${formattedPageBlocks}`
-          : '【说明】本 PDF 为扫描件或无内嵌文本层，请直接阅读随附 PDF 原件提取每页文本与页码证据。',
-      ].join('\n');
-
-      if (useOpenAi) {
-        const baseUrl = providerConfig?.baseUrl || '';
-        const apiKey = providerConfig?.apiKey || '';
-        const model = (providerConfig?.model || '').trim();
-        const urlError = validateOpenAiBaseUrl(baseUrl);
-        if (urlError) {
-          res.status(400).json({ error: urlError });
-          return;
-        }
-        if (!model) {
-          res.status(400).json({ error: '请先在“模型设置”中选择要调用的模型。' });
-          return;
-        }
-        if (!hasTextContent) {
-          res.status(400).json({
-            error: '当前 PDF 无内嵌文本层（疑似纯扫描件）。OpenAI 兼容文本接口仅支持提取含文本层的 PDF，或切换为内置 Gemini 多模态读取。',
-          });
-          return;
-        }
-
-        const parsed = await callOpenAiPreanalyze({
-          baseUrl,
-          apiKey,
-          model,
-          promptText,
-        });
-        res.json(parsed);
-        return;
-      }
-
-      const ai = createGeminiClient();
-      if (!ai) {
-        res.status(500).json({
-          error: '未配置有效的 GEMINI_API_KEY，请在 Settings > Secrets 中设置，或前往“模型设置”切换为 OpenAI 兼容接口。',
-        });
-        return;
-      }
-
-      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
-      if (hasPdfBinary && (!hasTextContent || (body.pdfBase64?.length || 0) < 12 * 1024 * 1024)) {
-        parts.push({
-          inlineData: {
-            mimeType: 'application/pdf',
-            data: body.pdfBase64!,
-          },
-        });
-      }
-      parts.push({ text: promptText });
-
-      const response = await callGeminiWithRetry(ai, { parts });
-      const rawJson = (response.text ?? '').trim();
-      if (!rawJson) {
-        res.status(502).json({ error: 'Gemini 未返回结构化提取结果，请稍后重试。' });
-        return;
-      }
-
-      const parsed = parseGeminiJson(rawJson);
-      res.json(parsed);
+      res.json(await preanalyzePdf(body, settings));
     } catch (err) {
+      if (err instanceof ModelRequestError) {
+        res.status(err.status).json({ error: err.message });
+        return;
+      }
       if (isTimeoutError(err)) {
         console.warn('[/api/ai/preanalyze] upstream timeout');
         res.status(504).json({
@@ -946,10 +461,19 @@ async function startServer() {
     }
   });
 
+  const handleBodyError: express.ErrorRequestHandler = (error, _req, res, next) => {
+    if (error.type === 'entity.too.large') {
+      res.status(413).json({ error: '请求内容超过大小限制，单份 PDF 原件上限为 64 MiB。' });
+      return;
+    }
+    next(error);
+  };
+  app.use(handleBodyError);
+
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, ws: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer } },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -961,27 +485,12 @@ async function startServer() {
     });
   }
 
-  // Lightweight daily scheduler tick (checks once per minute if HH:MM matches scheduleConfig.dailyTime)
-  let lastScheduledDay = '';
-  const scheduleTimer = setInterval(async () => {
-    try {
-      const state = await loadSystemState();
-      if (!state.scheduleConfig.enabled) return;
-      const now = new Date();
-      const hh = String(now.getHours()).padStart(2, '0');
-      const mm = String(now.getMinutes()).padStart(2, '0');
-      const todayKey = `${now.toISOString().slice(0, 10)}_${state.scheduleConfig.dailyTime}`;
-      if (`${hh}:${mm}` === state.scheduleConfig.dailyTime && lastScheduledDay !== todayKey) {
-        lastScheduledDay = todayKey;
-        await scanServerDirectoryForTasks({ actorName: '每日定时调度器' });
-      }
-    } catch {
-      // Ignore background scan tick errors when directory isn't mounted
-    }
-  }, 60_000);
+  const tick = () => runDueScan().catch(err => console.error('[schedule]', err.message));
+  const scheduleTimer = setInterval(tick, 60_000);
+  void tick();
   scheduleTimer.unref?.();
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, process.env.HOST || '127.0.0.1', () => {
     console.log(`Gold workbench server running at http://localhost:${PORT}`);
   });
 }

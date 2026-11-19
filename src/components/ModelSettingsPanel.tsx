@@ -21,9 +21,15 @@ import {
   validateOpenAiBaseUrl,
 } from '../utils/aiSettings';
 
+import type { ExtendedRole } from '../types/system';
+
 interface ModelSettingsPanelProps {
   settings: AiProviderSettings;
-  onChangeSettings: (next: AiProviderSettings) => void;
+  ready: boolean;
+  canManage: boolean;
+  actorRole: ExtendedRole;
+  hasServerKey: boolean;
+  onSaveSettings: (next: AiProviderSettings) => Promise<void>;
   onJumpToPreanalyze: () => void;
 }
 
@@ -35,10 +41,20 @@ const ENDPOINT_EXAMPLES: Array<{ label: string; url: string }> = [
 ];
 
 export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
-  settings,
-  onChangeSettings,
+  settings: savedSettings,
+  ready,
+  canManage,
+  actorRole,
+  hasServerKey,
+  onSaveSettings,
   onJumpToPreanalyze,
 }) => {
+  const [settings, onChangeSettings] = useState(savedSettings);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const hasChanges = settings !== savedSettings;
+  useEffect(() => { onChangeSettings(savedSettings); }, [savedSettings]);
+
   const [showApiKey, setShowApiKey] = useState(false);
   const [probing, setProbing] = useState(false);
   const [probeError, setProbeError] = useState<string | null>(null);
@@ -94,6 +110,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           baseUrl: normalizedBase,
+          actorRole,
           apiKey: apiKey.trim(),
         }),
       });
@@ -113,6 +130,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
           : normalizedBase;
 
       const latest = settingsRef.current;
+      if (latest.provider !== current.provider || normalizeOpenAiBaseUrl(latest.openai.baseUrl) !== normalizedBase || latest.openai.apiKey !== current.openai.apiKey) return;
       const nextSelected = pickPreferredModel(models, latest.openai.selectedModel);
       const probedAt = new Date().toISOString();
 
@@ -142,7 +160,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
 
   // Auto-probe shortly after both a valid Base URL and API Key/Token are provided
   useEffect(() => {
-    if (settings.provider !== 'openai_compatible') return;
+    if (!canManage || settings.provider !== 'openai_compatible') return;
     const normalizedBase = normalizeOpenAiBaseUrl(settings.openai.baseUrl);
     if (validateOpenAiBaseUrl(normalizedBase) !== null) return;
     const trimmedKey = settings.openai.apiKey.trim();
@@ -156,10 +174,10 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
     }, 800);
 
     return () => window.clearTimeout(timer);
-  }, [settings.provider, settings.openai.baseUrl, settings.openai.apiKey]);
+  }, [canManage, settings.provider, settings.openai.baseUrl, settings.openai.apiKey]);
 
   const handleFieldBlurAutoProbe = () => {
-    if (settings.provider !== 'openai_compatible') return;
+    if (!canManage || settings.provider !== 'openai_compatible') return;
     const normalizedBase = normalizeOpenAiBaseUrl(settings.openai.baseUrl);
     if (validateOpenAiBaseUrl(normalizedBase) !== null) return;
     const trimmedKey = settings.openai.apiKey.trim();
@@ -174,19 +192,20 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
     setModelSearch('');
     onChangeSettings({
       ...settings,
+      provider: 'gemini',
       openai: { ...DEFAULT_AI_PROVIDER_SETTINGS.openai },
     });
   };
 
   return (
-    <div className="flex flex-col gap-5 p-5">
+    <fieldset disabled={!ready || !canManage || saving} className="flex min-w-0 flex-col gap-5 p-5">
       {/* Header & Current Active Status */}
       <section className="rounded-lg border border-slate-200 bg-white p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h1 className="text-base font-semibold text-slate-900">AI 模型与接口设置</h1>
             <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-slate-600">
-              <span>当前生效：{summary.providerLabel}</span>
+              <span>{hasChanges ? '待保存' : '当前生效'}：{summary.providerLabel}</span>
               <span aria-hidden="true">·</span>
               <span className="font-mono-tabular font-medium text-slate-900">
                 {summary.modelName}
@@ -198,15 +217,39 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
             </div>
           </div>
 
-          <button
-            type="button"
-            onClick={onJumpToPreanalyze}
-            className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-blue-700 px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-800"
-          >
-            前往工作台预分析
-            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              disabled={!hasChanges || !summary.isConfigured || probing}
+              onClick={async () => {
+                setSaving(true);
+                setSaveError('');
+                try {
+                  await onSaveSettings(settings);
+                } catch (err) {
+                  setSaveError(err instanceof Error ? err.message : '保存模型配置失败。');
+                } finally {
+                  setSaving(false);
+                }
+              }}
+              className="rounded-md bg-blue-700 px-3.5 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:bg-slate-300"
+            >
+              {saving ? '保存中…' : '保存后台配置'}
+            </button>
+            <button
+              type="button"
+              disabled={hasChanges}
+              onClick={onJumpToPreanalyze}
+              className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md bg-blue-700 px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-blue-800"
+            >
+              前往工作台预分析
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
         </div>
+        {!canManage && <p className="mt-2 text-xs text-slate-600">当前身份可查看后台模型配置，修改配置需有权限与设置管理权限。</p>}
+        {saveError && <p role="alert" className="mt-2 text-xs text-red-700">{saveError}</p>}
+        {!ready && <p role="status" className="mt-2 text-xs text-slate-600">正在读取服务器配置，若连接失败请刷新重试。</p>}
 
         {/* Provider Switch */}
         <div className="mt-5 border-t border-slate-100 pt-4">
@@ -279,7 +322,7 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
           <div>
             <h2 className="text-sm font-semibold text-slate-900">OpenAI 兼容接口连接与模型探测</h2>
             <p className="mt-0.5 text-xs text-slate-500">
-              填写接口地址和 Token 后将自动向 /models 探测可用模型列表，配置仅保存在当前浏览器会话中。
+              保存后，手动上传和定时扫盘使用同一套后台模型配置。
             </p>
           </div>
 
@@ -313,6 +356,10 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
                         openai: {
                           ...settings.openai,
                           baseUrl: preset.url,
+                          apiKey: '',
+                          availableModels: [],
+                          selectedModel: '',
+                          lastProbedAt: undefined,
                         },
                       });
                       setProbeError(null);
@@ -335,6 +382,10 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
                   openai: {
                     ...settings.openai,
                     baseUrl: e.target.value,
+                    apiKey: '',
+                    availableModels: [],
+                    selectedModel: '',
+                    lastProbedAt: undefined,
                   },
                 });
                 setProbeError(null);
@@ -369,7 +420,9 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
                     setProbeError(null);
                   }}
                   onBlur={handleFieldBlurAutoProbe}
-                  placeholder="输入 sk-... 或兼容接口访问 Token（本地 Ollama 可留空）"
+                  placeholder={hasServerKey && normalizeOpenAiBaseUrl(settings.openai.baseUrl) === normalizeOpenAiBaseUrl(savedSettings.openai.baseUrl)
+                    ? '已保存令牌，留空沿用或输入新令牌替换'
+                    : '输入访问 Token（无需认证的本地接口可留空）'}
                   className="font-mono-tabular w-full rounded-md border border-slate-300 bg-white py-2 pr-10 pl-3 text-xs text-slate-900 placeholder:text-slate-400 focus:border-blue-700 focus:outline-none"
                 />
                 <button
@@ -609,6 +662,6 @@ export const ModelSettingsPanel: React.FC<ModelSettingsPanelProps> = ({
           </div>
         </div>
       </section>
-    </div>
+    </fieldset>
   );
 };

@@ -23,7 +23,9 @@ interface PermissionsPanelProps {
   subTabRequest?: { tab: 'rbac' | 'model'; nonce: number } | null;
   onSwitchIdentity: (identityId: string) => void;
   onUpdatePermissions: (next: RolePermissionMatrix, changeSummary: string) => Promise<void>;
-  onChangeAiSettings: (next: AiProviderSettings) => void;
+  settingsReady: boolean;
+  hasServerKey: boolean;
+  onSaveAiSettings: (next: AiProviderSettings) => Promise<void>;
   onJumpToPreanalyze: () => void;
 }
 
@@ -38,7 +40,9 @@ export const PermissionsPanel: React.FC<PermissionsPanelProps> = ({
   subTabRequest,
   onSwitchIdentity,
   onUpdatePermissions,
-  onChangeAiSettings,
+  settingsReady,
+  hasServerKey,
+  onSaveAiSettings,
   onJumpToPreanalyze,
 }) => {
   const [subTab, setSubTab] = useState<'rbac' | 'model'>('rbac');
@@ -122,7 +126,11 @@ export const PermissionsPanel: React.FC<PermissionsPanelProps> = ({
         <div className="rounded-lg border border-slate-200 bg-white">
           <ModelSettingsPanel
             settings={aiSettings}
-            onChangeSettings={onChangeAiSettings}
+            ready={settingsReady}
+            canManage={canEditPermissions}
+            actorRole={activeIdentity.role}
+            hasServerKey={hasServerKey}
+            onSaveSettings={onSaveAiSettings}
             onJumpToPreanalyze={onJumpToPreanalyze}
           />
         </div>

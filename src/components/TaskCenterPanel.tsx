@@ -24,6 +24,12 @@ import {
 
 interface TaskCenterPanelProps {
   tasks: AnalysisTask[];
+  pageNumber: number;
+  hasOlder: boolean;
+  loadingPage: boolean;
+  taskListError: string;
+  onOlder: () => void;
+  onNewer: () => void;
   scheduleConfig: BatchScheduleConfig;
   canManageSchedule: boolean;
   canUploadAndRun: boolean;
@@ -46,6 +52,12 @@ const SOURCE_LABELS: Record<TaskSource, string> = {
 
 export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
   tasks,
+  pageNumber,
+  hasOlder,
+  loadingPage,
+  taskListError,
+  onOlder,
+  onNewer,
   scheduleConfig,
   canManageSchedule,
   canUploadAndRun,
@@ -107,6 +119,7 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
 
   return (
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-5 px-6 py-5">
+      {taskListError && <p role="alert" className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">{taskListError}，正在重新连接任务队列。</p>}
       {/* Summary KPI Strip */}
       <section
         aria-label="任务执行概览统计"
@@ -367,6 +380,15 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
           </div>
         </div>
 
+        {(hasOlder || pageNumber > 1) && (
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-2 text-xs text-slate-600">
+            <span>第 {pageNumber} 页 · 统计、筛选和搜索均基于本页任务</span>
+            <div className="flex gap-3">
+              <button type="button" disabled={loadingPage || pageNumber === 1} onClick={onNewer} className="text-blue-700 disabled:text-slate-400">较新任务</button>
+              <button type="button" disabled={loadingPage || !hasOlder} onClick={onOlder} className="text-blue-700 disabled:text-slate-400">较早任务</button>
+            </div>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-left text-xs">
             <thead>
@@ -391,7 +413,7 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
                   const statusMeta = TASK_STATUS_META[task.status];
                   const canStartOrRetry =
                     canUploadAndRun &&
-                    (task.status === 'idle' || task.status === 'queued' || task.status === 'failed');
+                    (task.status === 'idle' || task.status === 'failed' || (task.status === 'queued' && !task.taskId.startsWith('PDF-')));
                   return (
                     <tr key={task.taskId} className="hover:bg-slate-50/70">
                       <td className="px-4 py-3 align-top">
@@ -407,7 +429,7 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
                           {task.filename}
                         </div>
                         <div className="font-mono-tabular mt-0.5 text-[11px] text-slate-500">
-                          {task.pageCount} 页 · {task.modelLabel}
+                          {task.pageCount > 0 ? `${task.pageCount} 页` : '页数待解析'} · {task.modelLabel}
                         </div>
                       </td>
                       <td className="px-4 py-3 align-top">
@@ -478,7 +500,7 @@ export const TaskCenterPanel: React.FC<TaskCenterPanelProps> = ({
                           >
                             {canEditCase ? '进入分析详情' : '查看详情'}
                           </button>
-                          {canUploadAndRun && (
+                          {canUploadAndRun && !(task.taskId.startsWith('PDF-') && (task.status === 'parsing_pdf' || task.status === 'ai_extracting')) && (
                             <button
                               type="button"
                               aria-label={`删除任务 ${task.taskId}`}

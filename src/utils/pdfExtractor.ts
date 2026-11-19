@@ -1,5 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import { normalizePdfTextForDisplay } from './goldRules';
+import { readPdfPageTexts } from './pdfPageText';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -39,15 +39,7 @@ export async function extractPdfPagesFromUrl(
   });
   const doc = await loadingTask.promise;
 
-  const pageTexts: Record<number, string> = {};
-  for (let p = 1; p <= doc.numPages; p += 1) {
-    const page = await doc.getPage(p);
-    const tc = await page.getTextContent();
-    const raw = tc.items
-      .map((item) => ('str' in item ? item.str : ''))
-      .join(' ');
-    pageTexts[p] = normalizePdfTextForDisplay(raw);
-  }
+  const pageTexts = await readPdfPageTexts(doc);
 
   const totalChars = Object.values(pageTexts)
     .join('')
