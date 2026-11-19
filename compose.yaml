@@ -16,5 +16,25 @@ services:
       timeout: 3s
       retries: 10
 
+  ocr:
+    image: tsi-paddleocr
+    pull_policy: never
+    profiles: ["ocr"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8867:8867"
+    volumes:
+      - ./docker/ocr/lines.py:/app/lines.py:ro
+      - ./.local-data/paddle-ocr-models:/models:ro
+    environment:
+      PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK: "True"
+    command: ["uvicorn", "lines:app", "--host", "0.0.0.0", "--port", "8867"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8867/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
 volumes:
   pdf-postgres:

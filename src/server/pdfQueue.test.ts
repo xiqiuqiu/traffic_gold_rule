@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { Pool } from 'pg';
 import { SEED_CASES } from '../data/seedCases';
+import type { PdfPageEvidence } from './pageEvidence';
 
 const testDatabaseUrl = process.env.PDF_QUEUE_TEST_DATABASE_URL;
 
@@ -61,11 +62,58 @@ test('原件去重、待命、领取与故障恢复共用 PostgreSQL 的任务�
   const first = leases[0]!;
   assert.equal(first.modelConfigVersion, 'v1');
   assert.equal(await queue.savePdfArtifact(first, 'text', '保存的文本'), true);
+  const extractionVersion = 'inspector-test+paddle-test';
+  const page: PdfPageEvidence = { pageNumber: 2, width: 600, height: 800, rotation: 90,
+    source: 'ocr', reason: '扫描页', text: '王小\n明无责任', engine: 'paddle-test', renderWidth: 1200, renderHeight: 1600,
+    lines: [
+      { text: '王小', bbox: [0.1,0.1,0.6,0.15], rawBox: [120,160,720,240], confidence: 0.989 },
+      { text: '明无责任', bbox: [0.1,0.2,0.6,0.25], rawBox: [120,320,720,400], confidence: 0.977 },
+    ] };
+  await t.test('页与行原子保存，按来源文件与版本复用不可变的原始页', async () => {
+    const invalid: PdfPageEvidence = { ...page, lines: [{ ...page.lines[0], bbox: [1,0,0,1] }] };
+    await assert.rejects(queue.savePageEvidence(first, extractionVersion, invalid), /check constraint/);
+    assert.equal(await queue.readCachedPageText(first, extractionVersion, 2), null);
+    assert.equal(await queue.savePageEvidence(first, extractionVersion, page), page.text);
+    assert.equal(await queue.savePageEvidence(first, extractionVersion, { ...page, text: '后到的结果' }), page.text);
+    assert.equal(await queue.readCachedPageText(first, 'another-engine', 2), null);
+    assert.equal(await queue.readCachedPageText(first, extractionVersion, 1), null);
+    const stored = await queue.pool.query(`SELECT p.page_number,l.line_number,l.line_text,l.bbox,l.raw_box,l.confidence
+      FROM pdf_pages p JOIN pdf_page_lines l ON l.page_id=p.id WHERE p.created_by_run=$1 ORDER BY l.line_number`, [first.runId]);
+    assert.deepEqual(stored.rows.map(row => [row.page_number,row.line_number,row.line_text,row.bbox,row.raw_box,row.confidence]),
+      page.lines.map((line, index) => [2,index+1,line.text,line.bbox,line.rawBox,line.confidence]));
+    const blank: PdfPageEvidence = { ...page, pageNumber: 1, source: 'blank', text: '', lines: [] };
+    assert.equal(await queue.savePageEvidence(first, extractionVersion, blank), '');
+    assert.equal(await queue.readCachedPageText(first, extractionVersion, 1), '');
+  });
+  await t.test('OCR 并发槽支持取消等待，并在识别失败时释放', async () => {
+    const signal = new AbortController().signal;
+    let entered!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const firstRequest = queue.withOcrSlot(signal, async () => { entered(); await gate; });
+    try {
+      await ready;
+      await assert.rejects(queue.withOcrSlot(AbortSignal.timeout(50), async () => assert.fail('不应取得忙碌槽')), {name:'AbortError'});
+    } finally {
+      release();
+      await firstRequest;
+    }
+    await assert.rejects(queue.withOcrSlot(signal, async () => { throw new Error('OCR failed'); }), /OCR failed/);
+    assert.equal(await queue.withOcrSlot(signal, async () => 'ok'), 'ok');
+  });
   await queue.pool.query("UPDATE pdf_tasks SET lease_until=now()-interval '1 second' WHERE id=$1", [staged.taskId]);
   const recovered = (await queue.claimPdfTask())!;
   assert.equal(recovered.runId, first.runId);
   assert.equal(recovered.generation, first.generation + 1);
   assert.equal(await queue.readPdfArtifact(recovered, 'text'), '保存的文本');
+  assert.equal(await queue.savePageEvidence(first, extractionVersion, { ...page, pageNumber: 3 }), null);
+  assert.equal(await queue.readCachedPageText(recovered, extractionVersion, 2), page.text);
+  const migrated = { extractionVersion, pageTexts: { 1: '', 2: page.text } };
+  assert.equal(await queue.savePdfArtifact(first, 'text', migrated), false);
+  assert.equal(await queue.savePdfArtifact(recovered, 'text', migrated), true);
+  assert.equal(await queue.savePdfArtifact(recovered, 'text', { extractionVersion: 'unexpected' }), true);
+  assert.deepEqual(await queue.readPdfArtifact(recovered, 'text'), migrated);
   assert.equal(await queue.renewPdfLease(first), false);
   assert.equal(await queue.savePdfArtifact(first, 'draft', {}), false);
   assert.equal(await queue.failPdfTask(first, '旧 worker', false), false);

@@ -7,3 +7,4 @@ coverage/
 .env*
 !.env.example
 .local-data/pdf-originals/
+.local-data/paddle-ocr-models/

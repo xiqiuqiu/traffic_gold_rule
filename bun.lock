@@ -5,6 +5,7 @@
     "": {
       "name": "react-example",
       "dependencies": {
+        "@firecrawl/pdf-inspector": "1.26.1",
         "@google/genai": "^3.6.1",
         "@langchain/core": "^1.4.2",
         "@langchain/langgraph": "^1.7.5",
@@ -96,6 +97,20 @@
     "@esbuild/win32-ia32": ["@esbuild/win32-ia32@0.25.12", "", { "os": "win32", "cpu": "ia32" }, "sha512-HkqnmmBoCbCwxUKKNPBixiWDGCpQGVsrQfJoVGYLPT41XWF8lHuE5N6WhVia2n4o5QK5M4tYr21827fNhi4byQ=="],
 
     "@esbuild/win32-x64": ["@esbuild/win32-x64@0.25.12", "", { "os": "win32", "cpu": "x64" }, "sha512-alJC0uCZpTFrSL0CCDjcgleBXPnCrEAhTBILpeAp7M/OFgoqtAetfBzX0xM00MUsVVPpVjlPuMbREqnZCXaTnA=="],
+
+    "@firecrawl/pdf-inspector": ["@firecrawl/pdf-inspector@1.26.1", "", { "optionalDependencies": { "@firecrawl/pdf-inspector-darwin-arm64": "1.26.1", "@firecrawl/pdf-inspector-linux-arm64-gnu": "1.26.1", "@firecrawl/pdf-inspector-linux-arm64-musl": "1.26.1", "@firecrawl/pdf-inspector-linux-x64-gnu": "1.26.1", "@firecrawl/pdf-inspector-linux-x64-musl": "1.26.1", "@firecrawl/pdf-inspector-win32-x64-msvc": "1.26.1" }, "bin": { "pdf-inspector": "bin/pdf-inspector.mjs" } }, "sha512-NBS4+70E7mcLBxQaBowFc4xtwg5d6TJG0y47umDm/XoDuuAHwq7xLVZaC7IQsSczk5v7qyITV85WbNijb9r/JA=="],
+
+    "@firecrawl/pdf-inspector-darwin-arm64": ["@firecrawl/pdf-inspector-darwin-arm64@1.26.1", "", { "os": "darwin", "cpu": "arm64" }, "sha512-nd3NLEw08wdIjynBVA2dAKrynLekDfmNOQxfboHLwbJakxZ9FLzzICDFjmZ7Uhkl0PlKBAm/jzroPB7nx+zpTg=="],
+
+    "@firecrawl/pdf-inspector-linux-arm64-gnu": ["@firecrawl/pdf-inspector-linux-arm64-gnu@1.26.1", "", { "os": "linux", "cpu": "arm64", "libc": "glibc" }, "sha512-JL8zdX2vD1wkvfjbtqMbqhO+/AbnBxiH1nL4+gXkJOr5gBjVx7GYnpazWjFArz5lWFA5fPMyMr+tQ+unluHZ7w=="],
+
+    "@firecrawl/pdf-inspector-linux-arm64-musl": ["@firecrawl/pdf-inspector-linux-arm64-musl@1.26.1", "", { "os": "linux", "cpu": "arm64", "libc": "musl" }, "sha512-4kZxsIWiexFKQXdyM0aL3yEdoa5akjCOMSi731PZNQLXZRyV2aEPcrD3B0fPhmJu71o+RpbxWSLLB6AEM8awOg=="],
+
+    "@firecrawl/pdf-inspector-linux-x64-gnu": ["@firecrawl/pdf-inspector-linux-x64-gnu@1.26.1", "", { "os": "linux", "cpu": "x64", "libc": "glibc" }, "sha512-9/xV9yPxX+YQZ4KCzh/7URbYUz76mqqC3qcFX3vsyuPrfBCDRZK/f+rABLa1becn9OUaFeNlzYlOFRufEcVqvg=="],
+
+    "@firecrawl/pdf-inspector-linux-x64-musl": ["@firecrawl/pdf-inspector-linux-x64-musl@1.26.1", "", { "os": "linux", "cpu": "x64", "libc": "musl" }, "sha512-OxIbSKrlv8jISwQXYuyUruwDyTJgQlJO4ncZOYSdFhc6kB83ylG71l+d7NAIc7LG9f8d14KbAHA+uZ1yJv13dg=="],
+
+    "@firecrawl/pdf-inspector-win32-x64-msvc": ["@firecrawl/pdf-inspector-win32-x64-msvc@1.26.1", "", { "os": "win32", "cpu": "x64" }, "sha512-nntcpkrfgNNfdv8jqsy/UPhvJK43C4minEoG1rv/+BS454qlM08mqg9zYiaG6hhqCldhd7F8vFcbIudOpu3Vhg=="],
 
     "@google/genai": ["@google/genai@3.6.1", "", { "dependencies": { "google-auth-library": "^10.3.0", "p-retry": "^4.6.2", "protobufjs": "^7.6.5", "ws": "^8.21.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.2" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-DQIkZkl+VoZc+RUSaJ41vRuywjQDpP0t/oUf5/ddQhNW6JsPjVULW2EgHmuJ1mrr6ACtrmUdPlqtNXF1yfKySg=="],
 

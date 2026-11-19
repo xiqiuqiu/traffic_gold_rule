@@ -1,6 +1,6 @@
 # PDF 后台任务运行说明
 
-第一阶段使用 Node.js 工作台、独立 LangGraph worker 和 PostgreSQL 16。浏览器上传和每日扫盘调用同一入库函数。服务端按完整 SHA-256 保存 PDF 原件。文档来源、任务、模型配置版本、分页文本、机器草稿以及图检查点均可在进程重启后恢复。
+工作台使用 Node.js、独立 LangGraph worker 和 PostgreSQL 16。浏览器上传和每日扫盘调用同一入库函数。服务端按完整 SHA-256 保存 PDF 原件。文档来源、任务、模型配置版本、分页文本、机器草稿以及图检查点均可在进程重启后恢复。
 
 ## 本机启动
 
@@ -9,6 +9,17 @@
 ```sh
 docker compose up -d --wait
 ```
+
+本机的 `tsi-ocr` 已有 `tsi-paddleocr` 镜像和 PaddleOCR 3.7.0 的 PP-OCRv6 medium 检测、识别权重。首次为工作台准备模型时，从该容器复制这两个目录。然后启动工作台专用的行框接口。
+
+```sh
+mkdir -p .local-data/paddle-ocr-models
+docker cp tsi-ocr:/root/.paddlex/official_models/PP-OCRv6_medium_det .local-data/paddle-ocr-models/
+docker cp tsi-ocr:/root/.paddlex/official_models/PP-OCRv6_medium_rec .local-data/paddle-ocr-models/
+docker compose up -d --wait ocr
+```
+
+原有文本 OCR 接口继续使用 8866。worker 默认调用 `http://127.0.0.1:8867/v1/ocr/lines`，每次 POST 一张 `image/png`。部署在其他地址时，用 `PADDLE_OCR_URL` 指定相同接口。未配置 OCR 服务也可以运行有可靠文本层的材料；扫描页的识别错误会带原始页码进入队列重试或失败状态。
 
 在项目根目录开两个终端，各运行一个服务。Web 和 worker 必须指向同一个 `DATABASE_URL` 和 `PDF_STORAGE_DIR`。
 
@@ -28,9 +39,28 @@ docker compose up -d --wait
 
 用项目专用测试库可执行 `node --import tsx --test src/server/*.test.ts src/utils/*.test.ts`。设置 `PDF_QUEUE_TEST_DATABASE_URL` 后队列测试会创建和清理独立 schema。设置 `PDF_WORKER_DB_TEST=1` 后恢复测试使用 `DATABASE_URL` 创建和清理临时数据库，需要相应权限。
 
-## 数据边界
+## 分页处理与证据查询
 
-此阶段对文本型 PDF 沿用 PDF.js 和已有结构化解析。OpenAI 兼容文本接口遇到无文字页会标记任务失败并指出页号；Gemini 可按原有能力读取整份原件。逐页 OCR 和责任原文坐标属于下一阶段。
+- worker 使用 `@firecrawl/pdf-inspector` 逐页取文，从带位置的原生文字生成行。文字不可靠或整页扫描底图只有零星页眉时，渲染原页交给本机 PaddleOCR；已确认全白的页记录为 `blank`。识别不到文字的非空白页会阻止该份文档交付完整草稿。
+- `pdf_pages` 使用完整 SHA-256、提取版本和 **1 起始原始页码** 唯一标识一页。原生取文与 OCR 都记录可见页的尺寸（pt）和旋转。OCR 页还记录源 PNG 的像素尺寸、引擎和分流原因。
+- `pdf_page_lines` 的 `(page_id, line_number)` 标识原文行。`bbox` 是可见页左上角为原点的 `[左, 上, 右, 下]`（0～1）；`raw_box` 在原生页使用可见页 pt，在 OCR 页使用源 PNG 像素。识别行附带置信度。服务关闭文档纠偏，返回框对应上传图像。
+- 一页及其全部行在同一事务提交。跨进程共用一个 OCR 并发槽，相同原件、相同提取版本的已成功页可以复用。当前运行完成取文后，`pdf_run_artifacts` 的 `text` 产物保存 `extractionVersion`，模型使用按原始页码合并的文本。旧任务继续展示当时的草稿；显式创建新运行可获得新页证据。
+
+在工作台 PostgreSQL 数据库执行下面的查询，将 `$1` 和 `$2` 绑定为任务编号和原始页码，即可核对该运行实际使用的行与位置。
+
+```sql
+SELECT p.page_number, p.source, p.render_width, p.render_height,
+       l.line_number, l.line_text, l.bbox, l.raw_box, l.confidence
+FROM pdf_tasks t
+JOIN pdf_run_artifacts a ON a.run_id = t.run_id AND a.kind = 'text'
+JOIN pdf_pages p ON p.sha256 = t.sha256
+                AND p.extraction_version = a.body->>'extractionVersion'
+LEFT JOIN pdf_page_lines l ON l.page_id = p.id
+WHERE t.id = $1 AND p.page_number = $2
+ORDER BY l.line_number;
+```
+
+## 数据边界
 
 后台初稿使用项目内置的字段和词表。人工修订、自定义词表和历史案件继续沿用原工作台的浏览器存储。备份时应配套保留原件目录、PostgreSQL 数据、原有系统状态及浏览器中的人工修订。当前测试身份入口适用于本机工作台。
 
@@ -39,4 +69,7 @@ docker compose up -d --wait
 - 用项目的两页 PDF 验证浏览器上传待命、手动开始、定时器扫盘、原件逐字节下载和生成草稿。两条入口相遇时按内容去重。此组使用本机模拟模型，以保证流程测试可重复。
 - 用一页虚构事故材料单独调用 3425 上的 `group/ds4.1`，worker 生成 25 项字段及法律结论草稿，包括测试甲承担全部责任、测试乙无责任。
 - 用 1,000 份内容不同的小型合成 PDF 测量入库。首轮生成 1,000 条待命任务，用时 29.9 秒；复扫 6.7 秒，新增 0 条。此项只计文件持久化与队列入库。
-- 在模型请求期间强制结束 worker，模拟租约到期及一次限流。重启后复用原运行的分页文本并交付草稿。真实扫描件、真实高峰日整批模型耗时留给下一阶段压测。
+- 在模型请求期间强制结束 worker，模拟租约到期及一次限流。重启后复用原运行的分页文本并交付草稿。
+
+- 第二阶段用同一组混合样本走完整 worker，在隔离 PostgreSQL 中查询实际落库数据，并用本机测试模型核对输入页码。CASE-08 和 CASE-13 均只有第 2 页请求真实 PaddleOCR。两份责任段落合计 9 行逐行命中，按 1191 × 1684 参考图像换算，最大竖直中心偏差 3.8 像素。5 份原生 PDF 共 10 页的 OCR 调用数为 0；60 页混合样本只有第 35 页请求 OCR。
+- OCR 临时失败的回归测试中，第 3 页失败前已写入前两页，重启后只重试第 3 页，随后成功写入第 4 页的空白标记。真实歪斜、印章遮挡材料和每日高峰批次耗时仍需独立验证。

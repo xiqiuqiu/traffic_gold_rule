@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import type { PdfPageEvidence } from './pageEvidence';
 import { Pool, type PoolClient } from 'pg';
 import type { CaseDocument } from '../types/gold';
 import type { AnalysisTask, ExtendedRole, SystemAuditEvent } from '../types/system';
@@ -75,6 +77,33 @@ export async function initPdfQueue() {
         kind text NOT NULL CHECK (kind IN ('text','draft')),
         body jsonb NOT NULL,
         PRIMARY KEY (run_id, kind)
+      );
+      CREATE TABLE IF NOT EXISTS pdf_pages (
+        id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        sha256 text NOT NULL REFERENCES pdf_originals,
+        extraction_version text NOT NULL,
+        page_number integer NOT NULL CHECK (page_number >= 1),
+        width double precision NOT NULL CHECK (width > 0 AND width < 'Infinity'),
+        height double precision NOT NULL CHECK (height > 0 AND height < 'Infinity'),
+        rotation integer NOT NULL CHECK (rotation IN (0,90,180,270)),
+        source text NOT NULL CHECK (source IN ('native','ocr','blank')),
+        reason text, engine text NOT NULL,
+        render_width integer CHECK (render_width > 0), render_height integer CHECK (render_height > 0),
+        page_text text NOT NULL, created_by_run uuid NOT NULL,
+        UNIQUE (sha256, extraction_version, page_number),
+        CHECK (source <> 'ocr' OR (render_width IS NOT NULL AND render_height IS NOT NULL))
+      );
+      CREATE TABLE IF NOT EXISTS pdf_page_lines (
+        page_id bigint NOT NULL REFERENCES pdf_pages ON DELETE CASCADE,
+        line_number integer NOT NULL CHECK (line_number >= 1),
+        line_text text NOT NULL CHECK (length(line_text) > 0),
+        bbox double precision[] NOT NULL, raw_box double precision[] NOT NULL,
+        confidence double precision CHECK (confidence BETWEEN 0 AND 1),
+        PRIMARY KEY (page_id, line_number),
+        CHECK (cardinality(bbox)=4 AND array_position(bbox,NULL) IS NULL AND
+          bbox[1]>=0 AND bbox[2]>=0 AND bbox[3]<=1 AND bbox[4]<=1 AND bbox[1]<bbox[3] AND bbox[2]<bbox[4]),
+        CHECK (cardinality(raw_box)=4 AND array_position(raw_box,NULL) IS NULL AND
+          raw_box[1]<raw_box[3] AND raw_box[2]<raw_box[4])
       );
       CREATE TABLE IF NOT EXISTS pdf_task_events (
         task_id text NOT NULL REFERENCES pdf_tasks ON DELETE CASCADE,
@@ -335,13 +364,95 @@ export async function updatePdfProgress(lease: PdfLease, stage: 'parsing_pdf' | 
   return result.rowCount === 1;
 }
 
+// Each page is an immutable cache entry. A run's text artifact pins its extractionVersion.
+export async function readCachedPageText(lease: PdfLease, version: string, pageNumber: number): Promise<string | null> {
+  const cached = await pool.query('SELECT page_text FROM pdf_pages WHERE sha256=$1 AND extraction_version=$2 AND page_number=$3',
+    [lease.task.fileSha256.slice(7), version, pageNumber]);
+  return cached.rows[0]?.page_text ?? null;
+}
+
+export async function savePageEvidence(lease: PdfLease, version: string, page: PdfPageEvidence): Promise<string | null> {
+  if (page.source === 'blank' ? page.text.trim() || page.lines.length : !page.text.trim() || !page.lines.length)
+    throw new Error(`第 ${page.pageNumber} 页内容与文字行不完整`);
+  if (page.source === 'ocr' && (!page.engine || page.lines.some(line => !line.rawBox || line.confidence == null)))
+    throw new Error(`第 ${page.pageNumber} 页缺少 OCR 引擎、原始坐标或置信度`);
+
+  return transaction(async client => {
+    const owned = await client.query(`SELECT sha256 FROM pdf_tasks WHERE ${ownedLease} AND run_id=$3 FOR UPDATE`,
+      [...leaseArgs(lease), lease.runId]);
+    if (!owned.rowCount) return null;
+    const key = [owned.rows[0].sha256, version, page.pageNumber];
+    const inserted = await client.query(`
+      INSERT INTO pdf_pages(sha256,extraction_version,page_number,width,height,rotation,source,reason,
+        engine,render_width,render_height,page_text,created_by_run)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+      ON CONFLICT (sha256,extraction_version,page_number) DO NOTHING RETURNING id`,
+    [...key, page.width, page.height, page.rotation, page.source, page.reason, page.engine ?? 'pdf-inspector',
+      page.renderWidth, page.renderHeight, page.text, lease.runId]);
+    if (!inserted.rowCount) {
+      const persisted = await client.query('SELECT page_text FROM pdf_pages WHERE sha256=$1 AND extraction_version=$2 AND page_number=$3', key);
+      return persisted.rows[0].page_text as string;
+    }
+    if (page.lines.length) {
+      const lines = page.lines.map((line, index) => {
+        const [x1,y1,x2,y2] = line.bbox;
+        return {
+          ...line, line_number: index + 1,
+          raw_box: line.rawBox ?? [x1 * page.width, y1 * page.height, x2 * page.width, y2 * page.height],
+        };
+      });
+      await client.query(`INSERT INTO pdf_page_lines(page_id,line_number,line_text,bbox,raw_box,confidence)
+        SELECT $1,line_number,text,bbox,raw_box,confidence FROM jsonb_to_recordset($2::jsonb) AS
+          line(line_number int,text text,bbox double precision[],raw_box double precision[],confidence double precision)`,
+        [inserted.rows[0].id, JSON.stringify(lines)]);
+    }
+    return page.text;
+  });
+}
+
+// A session lock spans the OCR request without holding a transaction or blocking lease heartbeats.
+export async function withOcrSlot<T>(signal: AbortSignal, work: (slotSignal: AbortSignal) => Promise<T>): Promise<T> {
+  while (true) {
+    signal.throwIfAborted();
+    const client = await pool.connect();
+    const disconnected = new AbortController();
+    const onDisconnect = (error: Error) => disconnected.abort(error);
+    client.on('error', onDisconnect);
+    let locked = false;
+    try {
+      const result = await client.query("SELECT pg_try_advisory_lock(hashtext('traffic_gold_paddle_ocr')) AS locked");
+      locked = result.rows[0].locked;
+      if (locked) {
+        const slotSignal = AbortSignal.any([signal, disconnected.signal]);
+        slotSignal.throwIfAborted();
+        return await work(slotSignal);
+      }
+    } finally {
+      try {
+        if (locked && !disconnected.signal.aborted) {
+          await client.query("SELECT pg_advisory_unlock(hashtext('traffic_gold_paddle_ocr'))");
+        }
+      } catch (error) {
+        disconnected.abort(error);
+        throw error;
+      } finally {
+        client.removeListener('error', onDisconnect);
+        client.release(disconnected.signal.aborted);
+      }
+    }
+    await delay(500, undefined, { signal });
+  }
+}
+
 type ArtifactKind = 'text' | 'draft';
 
 export async function savePdfArtifact(lease: PdfLease, kind: ArtifactKind, data: unknown): Promise<boolean> {
   const result = await pool.query(`
     WITH owned AS (SELECT id,run_id FROM pdf_tasks WHERE ${ownedLease} FOR UPDATE),
     saved AS (INSERT INTO pdf_run_artifacts (task_id,run_id,kind,body)
-      SELECT id,run_id,$3,$4::jsonb FROM owned ON CONFLICT DO NOTHING)
+      SELECT id,run_id,$3,$4::jsonb FROM owned
+      ON CONFLICT (run_id,kind) DO UPDATE SET body=excluded.body
+      WHERE excluded.kind='text' AND excluded.body ? 'extractionVersion' AND NOT (pdf_run_artifacts.body ? 'extractionVersion'))
     SELECT id FROM owned
   `, [...leaseArgs(lease), kind, JSON.stringify(data)]);
   return result.rowCount === 1;

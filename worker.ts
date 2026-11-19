@@ -13,11 +13,11 @@ import {
   renewPdfLease, savePdfArtifact, updatePdfProgress, type PdfLease,
 } from './src/server/pdfQueue';
 import { loadWorkerModelSettings, ModelRequestError, preanalyzePdf } from './src/server/modelService';
-import { extractOriginalText, PermanentPdfError, readOriginal } from './src/server/readPdf';
+import { PermanentPdfError } from './src/server/readPdf';
+import { loadRunPages } from './src/server/extractPages';
 
 const state = Annotation.Root({ stage: Annotation<'queued' | 'text' | 'draft'>() });
 const saver = new PostgresSaver(pool, undefined, { schema: 'pdf_graph' });
-type PageText = Awaited<ReturnType<typeof extractOriginalText>>;
 
 class LeaseLost extends Error {}
 function requireLease(current: boolean) {
@@ -37,16 +37,13 @@ async function processLease(lease: PdfLease) {
     const graph = new StateGraph(state)
       .addNode('extract', async () => {
         requireLease(await updatePdfProgress(lease, 'parsing_pdf', '正在校验原件并抽取分页文本', 35));
-        if (!await readPdfArtifact<PageText>(lease, 'text')) {
-          const pages = await extractOriginalText(lease.originalPath, task.fileSha256);
-          requireLease(await savePdfArtifact(lease, 'text', pages));
-        }
+        await loadRunPages(lease, controller.signal);
         return { stage: 'text' as const };
       })
       .addNode('analyze', async () => {
         if (await readPdfArtifact<CaseDocument>(lease, 'draft')) return { stage: 'draft' as const };
-        const pages = await readPdfArtifact<PageText>(lease, 'text');
-        if (!pages) throw new Error('缺少任务分页文本。');
+        // An in-flight first-stage run may resume directly at analyze with only the old text cache.
+        const pages = await loadRunPages(lease, controller.signal);
         const settings = await loadWorkerModelSettings(lease.modelConfigVersion);
         const summary = getActiveModelSummary(settings);
         if (!summary.isConfigured || (settings.provider === 'gemini' && (!process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEY === 'MY_GEMINI_API_KEY'))) {
@@ -54,19 +51,12 @@ async function processLease(lease: PdfLease) {
         }
         const modelLabel = `${summary.providerLabel} · ${summary.modelName}`;
         requireLease(await updatePdfProgress(lease, 'ai_extracting', '正在调用大模型生成案件草稿', 70, modelLabel));
-        const emptyPages = Object.entries(pages.pageTexts).filter(([, text]) => !text.trim()).map(([page]) => page);
-        if (emptyPages.length && settings.provider === 'openai_compatible') {
-          throw new PermanentPdfError(`第 ${emptyPages.join('、')} 页未提取到文本，请使用支持 PDF 的 Gemini 或提供带文本层的原件。`);
-        }
-        const textLength = Object.values(pages.pageTexts).join('').replace(/\s/g, '').length;
-        const useOriginal = settings.provider === 'gemini' && (emptyPages.length > 0 || textLength < 40);
-        const pdfBase64 = useOriginal ? (await readOriginal(lease.originalPath, task.fileSha256)).toString('base64') : undefined;
         const supplements = INITIAL_VOCABULARY_SUPPLEMENTS;
         const payload = await preanalyzePdf({
           caseId: task.caseId, sourceFilename: task.filename, pageCount: pages.pageCount,
-          pageTexts: useOriginal ? {} : pages.pageTexts, pdfBase64,
+          pageTexts: pages.pageTexts,
           schemaCatalog: buildAiSchemaCatalogPayload(supplements),
-        }, settings);
+        }, settings, 'page_evidence');
         const { nextCase } = mapAiExtractionToCaseDraft(
           createPlaceholderCaseForTask({ ...task, pageCount: pages.pageCount }),
           payload,

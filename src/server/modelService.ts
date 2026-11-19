@@ -485,7 +485,7 @@ function validatePayload(value: unknown): AiPreanalyzePayload {
   return parsed;
 }
 
-export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiProviderSettings): Promise<AiPreanalyzePayload> {
+export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiProviderSettings, textSource: 'browser' | 'page_evidence' = 'browser'): Promise<AiPreanalyzePayload> {
   const useOpenAi = settings.provider === 'openai_compatible';
   const pageTexts = body.pageTexts || {};
   const sortedPages = Object.keys(pageTexts)
@@ -494,11 +494,15 @@ export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiPro
     .sort((a, b) => a - b);
 
   const formattedPageBlocks = sortedPages
-    .map((p) => `=== 第 ${p} 页 ===\n${(pageTexts[String(p)] || '').trim()}`)
-    .filter((block) => block.length > 20)
+    .filter((p) => pageTexts[p]?.trim())
+    .map((p) => `=== 第 ${p} 页 ===\n${pageTexts[p].trim()}`)
+    .filter(block => textSource === 'page_evidence' || block.length > 20)
     .join('\n\n');
 
-  const hasTextContent = formattedPageBlocks.replace(/\s+/g, '').length >= 30;
+  // Page evidence has passed the worker's per-page check. A short sentence can carry the entire liability finding.
+  const hasTextContent = textSource === 'page_evidence'
+    ? formattedPageBlocks.length > 0
+    : formattedPageBlocks.replace(/\s+/g, '').length >= 30;
   const hasPdfBinary = typeof body.pdfBase64 === 'string' && body.pdfBase64.length > 20;
 
   if (!hasTextContent && !hasPdfBinary) {

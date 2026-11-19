@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { test } from 'node:test';
 import { Pool } from 'pg';
+import { makePagePdf } from './fixtures/pagePdf';
+import { OCR_ENGINE } from './paddleOcr';
 
 async function until(check: () => Promise<unknown>) {
   const started = Date.now();
@@ -22,7 +24,7 @@ async function until(check: () => Promise<unknown>) {
 // Run with PDF_WORKER_DB_TEST=1 and a DATABASE_URL allowed to create a temporary database.
 test('worker restarts from the text checkpoint and retries a transient model failure', {
   skip: process.env.PDF_WORKER_DB_TEST !== '1',
-}, async () => {
+}, async t => {
   const storage = await mkdtemp(join(tmpdir(), 'pdf-worker-test-'));
   const adminUrl = process.env.DATABASE_URL!;
   const admin = new Pool({ connectionString: adminUrl });
@@ -32,10 +34,26 @@ test('worker restarts from the text checkpoint and retries a transient model fai
   let worker: ChildProcess | undefined;
   let calls = 0;
   let receivedCase = false;
+  let ocrCalls = 0;
+  let lastPrompt = '';
   const model = createServer(async (request, response) => {
+    if (request.url === '/v1/ocr/lines') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(chunk);
+      const image = Buffer.concat(chunks);
+      ocrCalls++;
+      if (ocrCalls === 2) { response.writeHead(503).end(); return; }
+      response.setHeader('Content-Type', 'application/json');
+      response.end(JSON.stringify({
+        engine: OCR_ENGINE, width: image.readUInt32BE(16), height: image.readUInt32BE(20),
+        lines: [{ text: ocrCalls === 1 ? '甲全责' : '乙无责', rawBox: [1, 2, 32, 22], confidence: 0.99 }],
+      }));
+      return;
+    }
     let text = '';
     for await (const chunk of request) text += chunk;
-    receivedCase ||= text.includes('王小明无责任');
+    lastPrompt = JSON.parse(text).messages.at(-1).content;
+    receivedCase ||= lastPrompt.includes('王小明无责任');
     calls++;
     if (calls === 1) return; // Simulate a worker crash during a model request.
     if (calls === 2) { response.writeHead(429).end(); return; }
@@ -47,8 +65,8 @@ test('worker restarts from the text checkpoint and retries a transient model fai
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(payload) } }] }));
   });
-  const startWorker = () => spawn('node', ['--import', 'tsx', 'worker.ts'], {
-    env: process.env, stdio: ['ignore', 'inherit', 'inherit'],
+  const startWorker = (env = process.env) => spawn('node', ['--import', 'tsx', 'worker.ts'], {
+    env, stdio: ['ignore', 'inherit', 'inherit'],
   });
   async function stopWorker() {
     if (worker && worker.exitCode === null && worker.signalCode === null) {
@@ -103,6 +121,35 @@ test('worker restarts from the text checkpoint and retries a transient model fai
     assert.equal(result.draft.legalConclusions[0].evidences[0].page, 2);
     assert.equal(result.draft.legalConclusions[0].evidences[0].quote, '王小明无责任');
     assert.equal(result.draft.pdfUrl, task.pdfUrl);
+
+    await t.test('中途 OCR 失败后按原始页恢复，短责任引文进入模型输入', async () => {
+      await stopWorker();
+      const endpoint = 'http://127.0.0.1:' + address.port + '/v1/ocr/lines';
+      const bytes = makePagePdf([
+        { content: 'BT /F0 10 Tf 35 175 Td (Native text) Tj ET' },
+        { content: '0 g 50 130 90 50 re f' },
+        { content: 'q 190 0 0 240 10 20 cm /Im0 Do Q' },
+        { content: '' },
+      ]);
+      const { task: mixed } = await enqueuePdf(bytes, {
+        filename: '三类页.pdf', source: 'manual_upload', actorName: '测试', actorRole: 'admin', startImmediately: true,
+      });
+      const inspect = () => pool.query('SELECT page_number,source FROM pdf_pages WHERE sha256=$1 ORDER BY page_number', [mixed.fileSha256.slice(7)]);
+      const env = { ...process.env, PADDLE_OCR_URL: endpoint };
+      worker = startWorker(env);
+      await until(async () => ocrCalls === 2 &&
+        (await pool.query('SELECT status FROM pdf_tasks WHERE id=$1', [mixed.taskId])).rows[0].status === 'queued');
+      await stopWorker();
+      assert.deepEqual((await inspect()).rows.map(r => r.page_number), [1, 2]);
+      assert.equal((await pool.query('SELECT draft FROM pdf_tasks WHERE id=$1', [mixed.taskId])).rows[0].draft, null);
+      await pool.query('UPDATE pdf_tasks SET available_at=now() WHERE id=$1', [mixed.taskId]);
+      worker = startWorker(env);
+      await until(async () => (await pool.query('SELECT status FROM pdf_tasks WHERE id=$1', [mixed.taskId])).rows[0].status === 'pending_review');
+      assert.equal(ocrCalls, 3);
+      assert.deepEqual((await inspect()).rows.map(r => r.source), ['native', 'ocr', 'ocr', 'blank']);
+      assert.match(lastPrompt, /第 2 页 ===\n甲全责/);
+      assert.match(lastPrompt, /第 3 页 ===\n乙无责/);
+    });
   } finally {
     await stopWorker();
     model.closeAllConnections();
