@@ -4,12 +4,14 @@ import {
   ArrowLeft,
   BookOpen,
   CheckCircle2,
+  ChevronDown,
   Loader2,
   Lock,
   RotateCcw,
   Settings,
   Sparkles,
   Upload,
+  UserRound,
   X,
 } from 'lucide-react';
 import { AcceptanceExportPanel } from './components/AcceptanceExportPanel';
@@ -1624,15 +1626,14 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-slate-50 text-slate-900">
-      {/* Top Bar Contract: Strict 3 Zones, single row */}
-      <header className="flex shrink-0 items-center justify-between gap-6 border-b border-slate-200 bg-white px-5 py-3">
+      <header className="flex shrink-0 items-center justify-between gap-6 border-b border-slate-200 bg-white px-5 py-3 max-sm:flex-wrap max-sm:gap-2 max-sm:px-3">
         <span className="shrink-0 whitespace-nowrap text-base font-bold tracking-tight text-slate-900">
           智能事故分析系统
         </span>
 
         <nav
           aria-label="系统主导航"
-          className="flex items-center gap-6 overflow-x-auto text-sm font-medium"
+          className="flex items-center gap-6 overflow-x-auto text-sm font-medium max-sm:order-last max-sm:w-full max-sm:gap-4"
         >
           {(
             [
@@ -1658,7 +1659,7 @@ export default function App() {
           ))}
         </nav>
 
-        <div className="flex shrink-0 items-center">
+        <div className="flex shrink-0 items-center gap-2">
           <input
             ref={quickUploadRef}
             type="file"
@@ -1696,139 +1697,145 @@ export default function App() {
               上传 PDF 分析
             </button>
           )}
+          <button
+            type="button"
+            popoverTarget="test-user-switcher"
+            aria-label={`当前用户：${activeIdentity.name}，切换测试用户`}
+            className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-2.5 py-2 text-xs font-medium text-slate-800 hover:bg-slate-50 [anchor-name:--current-user]"
+          >
+            <UserRound className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="max-w-32 truncate max-sm:sr-only">{activeIdentity.name}</span>
+            <ChevronDown className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
+          </button>
+          <div
+            id="test-user-switcher"
+            popover="auto"
+            aria-labelledby="test-user-heading"
+            className="fixed inset-auto right-5 top-14 mt-1.5 w-64 rounded-lg border border-slate-200 bg-white p-2 text-slate-900 shadow-md max-sm:right-3 supports-[top:anchor(bottom)]:top-[anchor(--current-user_bottom,3.5rem)]"
+          >
+            <h2 id="test-user-heading" className="px-2 py-1.5 text-xs font-semibold text-slate-600">
+              切换测试用户
+            </h2>
+            {identities.map((profile) => {
+              const selected = profile.id === activeIdentity.id;
+              return (
+                <button
+                  key={profile.id}
+                  type="button"
+                  popoverTarget="test-user-switcher"
+                  popoverTargetAction="hide"
+                  aria-pressed={selected}
+                  onClick={() => {
+                    if (selected) return;
+                    setActiveIdentityId(profile.id);
+                    setPermissionNotice(`已切换为：${profile.name}（${EXTENDED_ROLE_META[profile.role].label}）`);
+                    window.setTimeout(() => setPermissionNotice(null), 2600);
+                  }}
+                  className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 text-left text-xs font-medium ${
+                    selected ? 'bg-blue-50 text-blue-800' : 'text-slate-800 hover:bg-slate-50'
+                  }`}
+                >
+                  {profile.name}
+                  {selected && <CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
+                </button>
+              );
+            })}
+            <p className="mt-1 border-t border-slate-100 px-2 pt-2 text-xs leading-relaxed text-slate-600">
+              {EXTENDED_ROLE_META[activeIdentity.role].description}
+            </p>
+          </div>
         </div>
       </header>
 
-      {/* Secondary System Context & Quick Identity Bar */}
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-2">
-        <div className="flex flex-wrap items-center gap-3">
-          {systemView === 'detail' && (
-            <>
-              <button
-                type="button"
-                onClick={() => setSystemView('tasks')}
-                className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-100"
-              >
-                <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
-                返回任务列表
-              </button>
-
-              <span className="max-w-[320px] truncate text-xs font-medium text-slate-800" title={activeCase.title}>
-                案件详情 · {activeCase.title}
-              </span>
-
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/pdf"
-                onChange={handleImportLocalPdfFromDetail}
-                className="hidden"
-                aria-label="导入本地 PDF 文件"
-              />
-              <button
-                type="button"
-                disabled={!canUploadAndRun}
-                onClick={() => fileInputRef.current?.click()}
-                className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                <Upload className="h-3.5 w-3.5" aria-hidden="true" />
-                导入本地 PDF
-              </button>
-
-              <button
-                type="button"
-                disabled={!canEditCase}
-                onClick={() => setAiPanelOpen((v) => !v)}
-                aria-expanded={aiPanelOpen}
-                className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
-                  aiPanelOpen
-                    ? 'bg-blue-50 text-blue-800'
-                    : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
-                }`}
-              >
-                <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-                AI 预分析
-              </button>
-            </>
-          )}
-
-          {/* Quick Identity Switcher (Retained across all system views) */}
-          <div className="flex items-center gap-2">
-            <label htmlFor="quick-identity-select" className="text-xs font-medium text-slate-600">
-              当前演示身份
-            </label>
-            <select
-              id="quick-identity-select"
-              value={activeIdentity.id}
-              onChange={(e) => {
-                const nextId = e.target.value;
-                setActiveIdentityId(nextId);
-                const nextProfile = identities.find((i) => i.id === nextId);
-                if (nextProfile) {
-                  setPermissionNotice(
-                    `已切换为：${nextProfile.name}（${EXTENDED_ROLE_META[nextProfile.role].label}）`,
-                  );
-                  window.setTimeout(() => setPermissionNotice(null), 2600);
-                }
-              }}
-              className="rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-900"
+      {systemView === 'detail' && (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-5 py-2">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setSystemView('tasks')}
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-800 hover:bg-slate-100"
             >
-              {identities.map((idProfile) => (
-                <option key={idProfile.id} value={idProfile.id}>
-                  {idProfile.name} · {EXTENDED_ROLE_META[idProfile.role].label}
-                </option>
-              ))}
-            </select>
+              <ArrowLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              返回任务列表
+            </button>
+
+            <span className="max-w-[320px] truncate text-xs font-medium text-slate-800" title={activeCase.title}>
+              案件详情 · {activeCase.title}
+            </span>
+
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf"
+              onChange={handleImportLocalPdfFromDetail}
+              className="hidden"
+              aria-label="导入本地 PDF 文件"
+            />
+            <button
+              type="button"
+              disabled={!canUploadAndRun}
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              <Upload className="h-3.5 w-3.5" aria-hidden="true" />
+              导入本地 PDF
+            </button>
+
+            <button
+              type="button"
+              disabled={!canEditCase}
+              onClick={() => setAiPanelOpen((v) => !v)}
+              aria-expanded={aiPanelOpen}
+              className={`inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
+                aiPanelOpen
+                  ? 'bg-blue-50 text-blue-800'
+                  : 'text-slate-700 hover:bg-slate-200/70 hover:text-slate-900'
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+              AI 预分析
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+            <span className="font-mono-tabular">
+              {activeCase.caseId} · {activeCase.pageCount} 页 · 全案 {totalCaseItemsCount} 项（草稿{' '}
+              {readiness.statusCounts.draft} / 争议 {readiness.statusCounts.disputed} / 已复核{' '}
+              {readiness.statusCounts.checked} / 裁定 {readiness.statusCounts.specialist_review}）
+            </span>
+            <span aria-hidden="true">·</span>
+            <button
+              type="button"
+              onClick={() =>
+                handleOpenAcceptanceWithStatus(pendingItemsCount > 0 ? 'pending_action' : 'all')
+              }
+              className={`inline-flex items-center gap-1 whitespace-nowrap font-medium underline-offset-2 hover:underline ${
+                pendingItemsCount > 0 ? 'text-amber-800' : 'text-emerald-800'
+              }`}
+            >
+              {pendingItemsCount > 0 ? `待处理 ${pendingItemsCount} 项（去验收排查）` : '全部已处理'}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setManualOpen(true)}
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900"
+            >
+              <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
+              标注手册
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetDemo}
+              title="重置为初始授权样本状态"
+              className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-200/70 hover:text-slate-900"
+            >
+              <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+              重置样本
+            </button>
           </div>
         </div>
-
-        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
-          {systemView === 'detail' ? (
-            <>
-              <span className="font-mono-tabular">
-                {activeCase.caseId} · {activeCase.pageCount} 页 · 全案 {totalCaseItemsCount} 项（草稿{' '}
-                {readiness.statusCounts.draft} / 争议 {readiness.statusCounts.disputed} / 已复核{' '}
-                {readiness.statusCounts.checked} / 裁定 {readiness.statusCounts.specialist_review}）
-              </span>
-              <span aria-hidden="true">·</span>
-              <button
-                type="button"
-                onClick={() =>
-                  handleOpenAcceptanceWithStatus(pendingItemsCount > 0 ? 'pending_action' : 'all')
-                }
-                className={`inline-flex items-center gap-1 whitespace-nowrap font-medium underline-offset-2 hover:underline ${
-                  pendingItemsCount > 0 ? 'text-amber-800' : 'text-emerald-800'
-                }`}
-              >
-                {pendingItemsCount > 0 ? `待处理 ${pendingItemsCount} 项（去验收排查）` : '全部已处理'}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setManualOpen(true)}
-                className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200/70 hover:text-slate-900"
-              >
-                <BookOpen className="h-3.5 w-3.5" aria-hidden="true" />
-                标注手册
-              </button>
-
-              <button
-                type="button"
-                onClick={handleResetDemo}
-                title="重置为初始授权样本状态"
-                className="inline-flex items-center gap-1 whitespace-nowrap rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-200/70 hover:text-slate-900"
-              >
-                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-                重置样本
-              </button>
-            </>
-          ) : (
-            <span className="font-mono-tabular text-slate-600">
-              {EXTENDED_ROLE_META[activeIdentity.role].description}
-            </span>
-          )}
-        </div>
-      </div>
+      )}
 
       {/* Transient RBAC / Identity Switch Feedback Bar */}
       {permissionNotice && (
