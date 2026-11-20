@@ -459,9 +459,8 @@ export default function App() {
     [localCase, activeTask, cases],
   );
   const waitingForDraft = isBackgroundCase && !localCase;
-  const draftTaskId = systemView === 'detail' && waitingForDraft &&
-    (activeTask?.status === 'pending_review' || activeTask?.status === 'approved')
-    ? activeTask.taskId : null;
+  const parsedTaskId = activeTask?.status === 'pending_review' || activeTask?.status === 'approved' ? detailTaskId : null;
+  const draftTaskId = systemView === 'detail' && waitingForDraft ? parsedTaskId : null;
   useEffect(() => {
     setDraftError('');
     if (!draftTaskId) return;
@@ -1806,6 +1805,8 @@ export default function App() {
             <PdfEvidenceViewer
               key={activeCase.pdfUrl}
               pdfUrl={activeCase.pdfUrl}
+              taskId={parsedTaskId}
+              fileSha256={activeCase.fileSha256}
               sourceFilename={activeCase.sourceFilename}
               currentPage={currentPdfPage}
               onPageChange={jumpToPdfPage}

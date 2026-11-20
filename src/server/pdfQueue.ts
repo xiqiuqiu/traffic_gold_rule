@@ -292,6 +292,15 @@ export async function getPdfTask(id: string): Promise<AnalysisTask | null> {
   return result.rows[0]?.task ?? null;
 }
 
+export async function getPdfPageTexts(taskId: string) {
+  const { rows } = await pool.query(`
+    SELECT t.sha256, a.body->'pageTexts' AS texts FROM pdf_tasks t
+    JOIN pdf_run_artifacts a ON a.run_id=t.run_id AND a.kind='text'
+    WHERE t.id=$1 AND jsonb_typeof(a.body->'pageTexts')='object'`, [taskId]);
+  const row = rows[0];
+  return row ? { fileSha256: `sha256:${row.sha256}`, pageTexts: row.texts } : null;
+}
+
 export async function getPdfSourceLines(taskId: string) {
   const { rows } = await pool.query(`
     SELECT t.sha256, a.body->>'extractionVersion' AS version FROM pdf_tasks t

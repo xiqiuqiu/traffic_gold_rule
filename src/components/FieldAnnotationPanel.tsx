@@ -1,3 +1,4 @@
+import { LinkCauseMenu } from './LinkCauseMenu';
 import { RecordInfo } from './RecordInfo';
 import { useCatalogOptions } from './useCatalogOptions';
 import React, { useEffect, useMemo, useState } from 'react';
@@ -1190,17 +1191,8 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                                   被认定原因引用
                                 </span>
                                 {item.presenceStatus === 'present' && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleCreateLinkedCause(item);
-                                    }}
-                                    className="inline-flex items-center gap-1 whitespace-nowrap text-xs font-medium text-blue-700 hover:underline"
-                                  >
-                                    <Plus className="h-3 w-3" />
-                                    基于此违法补录原因
-                                  </button>
+                                  <LinkCauseMenu violation={item} causes={allCauses} onSave={onSaveLegalItem}
+                                    onCreate={() => handleCreateLinkedCause(item)} />
                                 )}
                               </div>
                               {referencingCauses.length === 0 ? (

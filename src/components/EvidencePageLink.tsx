@@ -31,7 +31,7 @@ export function LiabilitySourceNote({ item, caseDoc, onLocate }: {
   const source = getVerifiedLiabilitySource(item, caseDoc);
   if (!source) {
     const reason = item.sourceLocation?.status === 'needs_review' ? item.sourceLocation.reason : '请核对原文与当前记录。';
-    return <span title={reason} className="text-xs text-amber-800">原文位置待核对</span>;
+    return <span title={reason} className="text-xs text-amber-800">责任结论待核对</span>;
   }
   if (item.evidences.length) return null;
   return <EvidencePageLink record={item} evidence={{ id: '', page: source.page, quote: source.quote }} onLocate={onLocate} />;

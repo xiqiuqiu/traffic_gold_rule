@@ -80,6 +80,8 @@ interface HighlightedEvidenceInput {
 
 interface PdfEvidenceViewerProps {
   pdfUrl: string;
+  taskId: string | null;
+  fileSha256: string;
   locatedSource: { page: number; quote: string; lines: LiabilitySourceLine[] } | null;
   locateRequest: object | null;
   sourceMessage?: string;
@@ -127,6 +129,8 @@ function applyTextLayerHighlights(container: HTMLElement | null, quotes: string[
 
 export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
   pdfUrl,
+  taskId,
+  fileSha256,
   locatedSource,
   locateRequest,
   sourceMessage,
@@ -147,6 +151,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
   const [scale, setScale] = useState<number>(0.9);
   const [viewMode, setViewMode] = useState<'canvas' | 'text'>('canvas');
   const [pageTexts, setPageTexts] = useState<Record<number, string>>({});
+  const [textError, setTextError] = useState('');
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [manualQuoteDraft, setManualQuoteDraft] = useState<string>('');
@@ -185,10 +190,12 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
     setLoading(true);
     setError(null);
     setPdfDoc(null);
+    setTextError('');
     setPageTexts({});
     onPageTextsExtracted?.({});
 
     (async () => {
+      let doc: pdfjsLib.PDFDocumentProxy;
       try {
         const res = await fetch(pdfUrl, { signal: abortController.signal });
         if (!res.ok) {
@@ -204,7 +211,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
           standardFontDataUrl: '/pdfjs/standard_fonts/',
         });
 
-        const doc = await loadingTask.promise;
+        doc = await loadingTask.promise;
         if (cancelled) return;
         setPdfDoc(doc);
         onDocumentReady(doc);
@@ -215,9 +222,33 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
           onPageChange(1);
         }
 
-        // Pre-extract clean page text in background for proofreading view
+      } catch (err) {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : 'PDF 加载失败');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const { signal } = abortController;
+        let stored: Record<number, string> = {};
+        if (taskId) {
+          const response = await fetch(`/api/system/tasks/${encodeURIComponent(taskId)}/page-texts`, { signal });
+          if (response.ok) {
+            const source = await response.json();
+            if (source.fileSha256 !== fileSha256) throw new Error('解析文本与当前 PDF 原件不一致。');
+            stored = source.pageTexts;
+          } else if (response.status !== 404) {
+            throw new Error('无法读取本次解析的文本，请重新打开任务重试。');
+          }
+        }
         const texts: Record<number, string> = {};
         for (let p = 1; p <= doc.numPages; p += 1) {
+          signal.throwIfAborted();
+          if (typeof stored[p] === 'string' && stored[p].trim()) {
+            texts[p] = stored[p];
+            continue;
+          }
           const page = await doc.getPage(p);
           const content = await page.getTextContent();
           const lines: string[] = [];
@@ -242,9 +273,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
           onPageTextsExtracted?.(texts);
         }
       } catch (err) {
-        if (cancelled || abortController.signal.aborted) return;
-        setError(err instanceof Error ? err.message : 'PDF 加载失败');
-        setLoading(false);
+        if (!cancelled) setTextError(err instanceof Error ? err.message : '校对文本读取失败。');
       }
     })();
 
@@ -254,7 +283,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
       onDocumentReady(null);
       loadingTask?.destroy().catch(() => {});
     };
-  }, [pdfUrl]);
+  }, [pdfUrl, taskId, fileSha256]);
 
   // Render active page canvas + selectable text layer
   useEffect(() => {
@@ -503,7 +532,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
             <canvas ref={canvasRef} />
             <div ref={textLayerRef} className="pdf-text-layer" />
             {showSource && locatedSource && (
-              <div role="img" aria-label={`第 ${currentPage} 页引用原文，已核验 ${locatedSource.lines.length} 行`}
+              <div role="img" aria-label={`第 ${currentPage} 页引用原文，已定位 ${locatedSource.lines.length} 行`}
                 className="pointer-events-none absolute inset-0 z-[3]">
                 {locatedSource.lines.map((line, index) => {
                   const [left, top, right, bottom] = line.bbox;
@@ -529,7 +558,7 @@ export const PdfEvidenceViewer: React.FC<PdfEvidenceViewerProps> = ({
             </div>
             {!pageTexts[currentPage] ? (
               <p className="relative z-[1] text-sm text-slate-500">
-                （本页未提取到文本层，请切回原件图文查看扫描件）
+                {textError || (pageTexts[currentPage] === undefined ? '正在读取校对文本…' : '本页未提取到文字，可切回原件图文查看。')}
               </p>
             ) : (
               <div className="relative z-[1] flex flex-col gap-2 text-sm leading-7 text-slate-800 select-text">

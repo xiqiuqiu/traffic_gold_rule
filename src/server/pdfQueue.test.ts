@@ -110,11 +110,14 @@ test('原件去重、待命、领取与故障恢复共用 PostgreSQL 的任务�
   assert.equal(await queue.readPdfArtifact(recovered, 'text'), '保存的文本');
   assert.equal(await queue.savePageEvidence(first, extractionVersion, { ...page, pageNumber: 3 }), null);
   assert.equal(await queue.readCachedPageText(recovered, extractionVersion, 2), page.text);
+  assert.equal(await queue.getPdfPageTexts(staged.taskId), null);
   const migrated = { extractionVersion, pageTexts: { 1: '', 2: page.text } };
   assert.equal(await queue.savePdfArtifact(first, 'text', migrated), false);
   assert.equal(await queue.savePdfArtifact(recovered, 'text', migrated), true);
   assert.equal(await queue.savePdfArtifact(recovered, 'text', { extractionVersion: 'unexpected' }), true);
   assert.deepEqual(await queue.readPdfArtifact(recovered, 'text'), migrated);
+  assert.deepEqual(await queue.getPdfPageTexts(staged.taskId), { fileSha256: staged.fileSha256, pageTexts: migrated.pageTexts });
+  assert.equal(await queue.getPdfPageTexts(v2.task.taskId), null);
   const lineSet = await queue.getPdfSourceLines(staged.taskId);
   assert.equal(lineSet?.extractionVersion, extractionVersion);
   assert.equal(lineSet?.fileSha256, staged.fileSha256);

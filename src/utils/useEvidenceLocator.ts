@@ -44,8 +44,8 @@ export function useEvidenceLocator(
     if (visible) return;
     const controller = new AbortController();
     const { signal } = controller;
-    const show = (location: Location) => {
-      if (!signal.aborted) { goToPage(location.page); setResult({ citation: active, location }); }
+    const show = (location: Location, message?: string) => {
+      if (!signal.aborted) { goToPage(location.page); setResult({ citation: active, location, message }); }
     };
     const showExcerpt = (lines: LiabilityLineSet['lines']) => {
       const location = resolveEvidenceLocation(evidence, lines);
@@ -97,7 +97,11 @@ export function useEvidenceLocator(
         signal.throwIfAborted();
         const location = resolveLiabilitySource(single ? liability : { ...liability, evidences: [evidence] }, doc.entities, lineSet);
         if (single && cache.stored) saveLiability(doc.caseId, liability, location);
-        if (location.status === 'needs_review') throw new Error(location.reason);
+        if (location.status === 'needs_review') {
+          const excerpt = resolveEvidenceLocation(evidence, lineSet.lines);
+          if (excerpt) return show(excerpt, '已定位摘录，责任结论待核对。');
+          throw new Error(location.reason);
+        }
         show(location);
       } else {
         showExcerpt(lineSet.lines);
