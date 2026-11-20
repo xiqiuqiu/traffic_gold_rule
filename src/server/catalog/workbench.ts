@@ -1,3 +1,4 @@
+import { legalFields } from '../../utils/legalCatalog';
 import { MASTER_FIELD_SCHEMA } from '../../data/schemaCatalog';
 import { SEED_CASES } from '../../data/seedCases';
 import type { CaseDocument } from '../../types/gold';
@@ -9,7 +10,6 @@ import { readPhraseClassifier, seedPhraseClassifier } from './codebook';
 import { textKey } from './textKey';
 
 const fields = new Map(MASTER_FIELD_SCHEMA.map(field => [field.fieldCode, field]));
-const legalCodes = { violation: 'D10.F058', cause: 'D10.F059', liability: 'D10.F060' };
 type Source = Pick<CaseDocument, 'fieldRecords' | 'legalConclusions'>;
 
 export function observationReader(reader = readPhraseClassifier()) {
@@ -31,7 +31,7 @@ export function observationReader(reader = readPhraseClassifier()) {
       if (row.presenceStatus === 'present') observe(row.fieldCode, row.rawValue, row.entityId, row.evidences[0]);
     }
     for (const row of source.legalConclusions) {
-      if (row.presenceStatus === 'present') observe(legalCodes[row.category], row.conclusionLabel, row.subjectId, row.evidences[0]);
+      if (row.presenceStatus === 'present') observe(legalFields[row.category], row.unmatchedConclusion || row.conclusionCode || row.conclusionLabel, row.subjectId, row.evidences[0]);
     }
     return residues;
   };

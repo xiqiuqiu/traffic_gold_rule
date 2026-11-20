@@ -4,6 +4,7 @@ import {
   ENTITY_KIND_META,
   INITIAL_VOCABULARY_SUPPLEMENTS,
   MASTER_FIELD_SCHEMA,
+  VIOLATION_REFERENCE_TERMS,
   PRESENCE_STATUS_META,
   REVIEW_STATUS_META,
 } from '../data/schemaCatalog';
@@ -134,6 +135,10 @@ export function validateFieldRecord(record: FieldRecord): ValidationIssue[] {
   return issues;
 }
 
+function isNoLiability(item: LegalConclusionItem) {
+  return item.conclusionCode === undefined ? item.conclusionLabel.trim() === '无责任' : item.conclusionCode === '5';
+}
+
 export function validateLegalConclusion(
   item: LegalConclusionItem,
   context?: {
@@ -144,6 +149,10 @@ export function validateLegalConclusion(
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   const statusRule = PRESENCE_STATUS_META[item.presenceStatus];
+
+  if (item.presenceStatus === 'present' && item.conclusionCode === '') {
+    issues.push({ code: 'UNMAPPED_LEGAL_CONCLUSION', severity: 'error', message: '标准结论待核对，请选择对应的码表项。' });
+  }
 
   if (!item.subjectId) {
     issues.push({
@@ -202,7 +211,7 @@ export function validateLegalConclusion(
     item.category === 'liability' &&
     item.presenceStatus === 'present' &&
     item.conclusionLabel.trim() &&
-    item.conclusionLabel.trim() !== '无责任' &&
+    !isNoLiability(item) &&
     (!item.linkedCauseIds || item.linkedCauseIds.length === 0)
   ) {
     issues.push({
@@ -433,6 +442,7 @@ export function buildGoldExportPayload(caseDoc: CaseDocument, maskPii: boolean) 
           event_id: l.eventId || null,
           presence_status: l.presenceStatus,
           law_article: l.lawArticle || null,
+          conclusion_code: l.conclusionCode || null,
           conclusion_label: l.conclusionLabel || null,
           raw_text: maybeMask(l.rawText),
           evidences: l.evidences.map((ev) => ({ page: ev.page, quote: maybeMask(ev.quote) })),
@@ -447,6 +457,7 @@ export function buildGoldExportPayload(caseDoc: CaseDocument, maskPii: boolean) 
           subject_id: l.subjectId,
           event_id: l.eventId || null,
           presence_status: l.presenceStatus,
+          conclusion_code: l.conclusionCode || null,
           conclusion_label: l.conclusionLabel || null,
           raw_text: maybeMask(l.rawText),
           evidences: l.evidences.map((ev) => ({ page: ev.page, quote: maybeMask(ev.quote) })),
@@ -463,6 +474,7 @@ export function buildGoldExportPayload(caseDoc: CaseDocument, maskPii: boolean) 
           event_id: l.eventId || null,
           presence_status: l.presenceStatus,
           law_article: l.lawArticle || null,
+          conclusion_code: l.conclusionCode || null,
           conclusion_label: l.conclusionLabel || null,
           raw_text: maybeMask(l.rawText),
           evidences: l.evidences.map((ev) => ({ page: ev.page, quote: maybeMask(ev.quote) })),
@@ -592,6 +604,7 @@ export function buildGoldV02ExportPayload(caseDoc: CaseDocument, maskPii: boolea
       }
       if (l.conclusionLabel) {
         record.candidate_value = l.conclusionLabel;
+        if (l.conclusionCode) record.conclusion_code = l.conclusionCode;
       }
       record.causal_link_status = l.causalLinkStatus || 'unspecified';
       record.linked_violation_record_ids = l.linkedViolationIds || [];
@@ -613,6 +626,7 @@ export function buildGoldV02ExportPayload(caseDoc: CaseDocument, maskPii: boolea
       };
       if (l.conclusionLabel) {
         record.candidate_value = l.conclusionLabel;
+        if (l.conclusionCode) record.conclusion_code = l.conclusionCode;
       }
       if (l.rawText) {
         record.raw_value = maybeMask(l.rawText, false);
@@ -1276,7 +1290,7 @@ export function traceLegalEvidenceChain(
   for (const l of liabilities) {
     if (
       l.presenceStatus === 'present' &&
-      l.conclusionLabel.trim() === '无责任' &&
+      isNoLiability(l) &&
       causes.length === 0
     ) {
       consistencyChecks.push({
@@ -1286,7 +1300,7 @@ export function traceLegalEvidenceChain(
       });
     } else if (
       l.presenceStatus === 'present' &&
-      l.conclusionLabel.trim() !== '无责任' &&
+      !isNoLiability(l) &&
       (!l.linkedCauseIds || l.linkedCauseIds.length === 0 || causes.length === 0)
     ) {
       consistencyChecks.push({
@@ -2157,12 +2171,12 @@ export function scanViolationLinkMatches(
   const vocabMatches: ViolationVocabMatch[] = [];
   const seenVocabKeys = new Set<string>();
 
-  // 1. Scan D10.F058 (wfxw) controlled vocabulary
+  // Match reference wording for the consistency check independently of the standard conclusion.
   const violationDef = MASTER_FIELD_SCHEMA.find((f) => f.fieldCode === 'D10.F058');
   const d10Supplement = supplements.find((s) => s.fieldCode === 'D10.F058');
   const primaryTerms = Array.from(
     new Set([
-      ...(violationDef?.presetOptions || []),
+      ...VIOLATION_REFERENCE_TERMS,
       ...(d10Supplement?.candidateOptions || []),
     ]),
   );
@@ -2399,9 +2413,6 @@ export function applyViolationVocabLink(
   );
   return {
     ...item,
-    conclusionLabel: match.isPrimaryStandard
-      ? match.standardTerm
-      : item.conclusionLabel,
     linkedVocabTerms: nextVocab,
     linkConsistencyConfirmed: false,
     linkConsistencyFingerprint: '',
@@ -2458,11 +2469,6 @@ export function applyAllViolationLinks(
     linkConsistencyConfirmed: false,
     linkConsistencyFingerprint: '',
   };
-
-  const primaryVocab = scan.vocabMatches.find((m) => m.isPrimaryStandard);
-  if (primaryVocab && (!next.conclusionLabel.trim() || !primaryVocab.isLinked)) {
-    next.conclusionLabel = primaryVocab.standardTerm;
-  }
 
   const matchedParty = scan.entityMatches.find(
     (m) => m.entityKind === 'P' || m.entityKind === 'O',

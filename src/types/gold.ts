@@ -121,6 +121,9 @@ export interface LegalConclusionItem {
   rawText: string;
   lawArticle: string;
   conclusionLabel: string;
+  conclusionCode?: string;
+  unmatchedConclusion?: string;
+  unmatchedConclusionCode?: string;
   causalLinkStatus?: CausalLinkStatus;
   linkedViolationIds?: string[];
   linkedCauseIds?: string[];

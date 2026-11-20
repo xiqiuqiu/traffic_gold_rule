@@ -1,3 +1,4 @@
+import { LegalConclusionSelect } from './LegalConclusionSelect';
 import { LinkCauseMenu } from './LinkCauseMenu';
 import { RecordInfo } from './RecordInfo';
 import { useCatalogOptions } from './useCatalogOptions';
@@ -869,7 +870,8 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           presenceStatus: 'present',
                           rawText: '',
                           lawArticle: '',
-                          conclusionLabel: cat === 'liability' ? '全部责任' : '',
+                          conclusionCode: '',
+                          conclusionLabel: '',
                           ...(cat !== 'liability'
                             ? { causalLinkStatus: 'unspecified' as CausalLinkStatus, linkedViolationIds: [] }
                             : { linkedCauseIds: [] }),
@@ -1088,14 +1090,14 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
                         <div>
                           <label className="mb-1 block text-xs font-medium text-slate-700">
-                            关联阶段事件 (E)
+                            适用阶段
                           </label>
                           <select
                             value={item.eventId}
                             onChange={(e) => saveEditedLegal({ eventId: e.target.value })}
                             className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs"
                           >
-                            <option value="">整起事故 (ACC)</option>
+                            <option value="">未限定阶段</option>
                             {events.map((ev) => (
                               <option key={ev.id} value={ev.id}>
                                 {ev.id} · {ev.label}
@@ -1127,38 +1129,7 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                           <label className="mb-1 block text-xs font-medium text-slate-700">
                             标准结论
                           </label>
-                          {(() => {
-                            const legalFieldCode =
-                              item.category === 'violation'
-                                ? 'D10.F058'
-                                : item.category === 'cause'
-                                  ? 'D10.F059'
-                                  : 'D10.F060';
-                            const legalDef = schemaByCode.get(legalFieldCode);
-                            const legalSupp = supplementByCode.get(legalFieldCode);
-                            const legalVocabOptions = legalDef
-                              ? buildControlledVocabOptions(legalDef, legalSupp)
-                              : [];
-                            const legalPlaceholder =
-                              item.category === 'liability'
-                                ? '全部责任 / 主要责任 / 次要责任 / 无责任'
-                                : item.category === 'cause'
-                                  ? '根本原因 / 全部原因 / 主要原因 / 次要原因'
-                                  : '检索标准违法词表或输入自定义结论…';
-                            return (
-                              <ControlledVocabCombobox
-                                compact
-                                ariaLabel={`${item.id} 标准结论`}
-                                options={legalVocabOptions}
-                                selectedValues={item.conclusionLabel ? [item.conclusionLabel] : []}
-                                allowCustomInput
-                                onChangeValues={(vals) =>
-                                  saveEditedLegal({ conclusionLabel: vals[0] || '' })
-                                }
-                                placeholder={legalPlaceholder}
-                              />
-                            );
-                          })()}
+                          <LegalConclusionSelect item={item} onChange={saveEditedLegal} />
                         </div>
                       </div>
 

@@ -1,6 +1,6 @@
+import { LegalConclusionSelect } from './LegalConclusionSelect';
 import { LinkCauseMenu } from './LinkCauseMenu';
 import { RecordInfo } from './RecordInfo';
-import { useCatalogOptions } from './useCatalogOptions';
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
@@ -47,7 +47,6 @@ import {
 } from '../utils/goldRules';
 import { EvidencePageLink, LiabilitySourceNote, type LocateEvidence } from './EvidencePageLink';
 import { nextLiabilityScope } from '../utils/nextLiabilityScope';
-import { ControlledVocabCombobox } from './ControlledVocabCombobox';
 import { ReviewLifecycleBar, getCardStatusBorderClass } from './ReviewLifecycleBar';
 import { ViolationLinkConsistencyBox } from './ViolationLinkConsistencyBox';
 
@@ -150,7 +149,6 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
   onDeleteRelationItem,
   externalFocusRequest,
 }) => {
-  const buildControlledVocabOptions = useCatalogOptions();
   const [subTab, setSubTab] = useState<'legal' | 'evidence_chain' | 'relations'>('legal');
   const [categoryFilter, setCategoryFilter] = useState<'ALL' | LegalCategory>('ALL');
   const [subjectFilter, setSubjectFilter] = useState<'ALL' | string>('ALL');
@@ -262,7 +260,8 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
       presenceStatus: 'present',
       rawText: '',
       lawArticle: '',
-      conclusionLabel: category === 'liability' ? '全部责任' : '',
+      conclusionCode: '',
+      conclusionLabel: '',
       ...(category !== 'liability'
         ? { causalLinkStatus: 'unspecified' as CausalLinkStatus, linkedViolationIds: [] }
         : { linkedCauseIds: [] }),
@@ -776,14 +775,14 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
 
                   <div>
                     <label className="mb-1 block text-xs font-medium text-slate-700">
-                      对应阶段事件 (E)
+                      适用阶段
                     </label>
                     <select
                       value={item.eventId}
                       onChange={(e) => saveEditedLegal({ eventId: e.target.value })}
                       className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-900"
                     >
-                      <option value="">整起事故 (ACC)</option>
+                      <option value="">未限定阶段</option>
                       {events.map((ev) => (
                         <option key={ev.id} value={ev.id}>
                           {ev.id} · {ev.label}
@@ -817,42 +816,7 @@ export const LegalRelationsPanel: React.FC<LegalRelationsPanelProps> = ({
                     <label className="mb-1 block text-xs font-medium text-slate-700">
                       标准结论
                     </label>
-                    {(() => {
-                      const legalFieldCode =
-                        item.category === 'violation'
-                          ? 'D10.F058'
-                          : item.category === 'cause'
-                            ? 'D10.F059'
-                            : 'D10.F060';
-                      const legalDef = MASTER_FIELD_SCHEMA.find(
-                        (f) => f.fieldCode === legalFieldCode,
-                      );
-                      const legalSupp = supplements.find(
-                        (s) => s.fieldCode === legalFieldCode,
-                      );
-                      const legalVocabOptions = legalDef
-                        ? buildControlledVocabOptions(legalDef, legalSupp)
-                        : [];
-                      const legalPlaceholder =
-                        item.category === 'liability'
-                          ? '全部责任 / 主要责任 / 次要责任 / 无责任'
-                          : item.category === 'cause'
-                            ? '根本原因 / 全部原因 / 主要原因 / 次要原因'
-                            : '检索标准违法词表或输入自定义结论…';
-                      return (
-                        <ControlledVocabCombobox
-                          compact
-                          ariaLabel={`${item.id} 标准结论`}
-                          options={legalVocabOptions}
-                          selectedValues={item.conclusionLabel ? [item.conclusionLabel] : []}
-                          allowCustomInput
-                          onChangeValues={(vals) =>
-                            saveEditedLegal({ conclusionLabel: vals[0] || '' })
-                          }
-                          placeholder={legalPlaceholder}
-                        />
-                      );
-                    })()}
+                    <LegalConclusionSelect item={item} onChange={saveEditedLegal} />
                   </div>
                 </div>
 

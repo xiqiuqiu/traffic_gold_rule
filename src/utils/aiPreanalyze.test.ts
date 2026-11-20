@@ -234,11 +234,13 @@ test('mapAiExtractionToCaseDraft aligns extracted violation conclusionLabel with
   };
 
   const res = mapAiExtractionToCaseDraft(base, payload, {
+    catalog: { 'D10.F058': [{ code: 'v1', value: '码表违法名称', aliases: ['未按照操作规范安全驾驶'] }] },
     supplements: INITIAL_VOCABULARY_SUPPLEMENTS,
   });
   const vio = res.nextCase.legalConclusions.find((l) => l.category === 'violation');
   assert.ok(vio);
-  assert.equal(vio.conclusionLabel, '未按操作规范安全驾驶');
+  assert.equal(vio.conclusionLabel, '码表违法名称');
+  assert.equal(vio.conclusionCode, 'v1');
   assert.equal(vio.linkConsistencyConfirmed, false);
   assert.equal(vio.evidences[0].page, 3);
   assert.deepEqual(vio.evidences[0].lineIds, ['37:6']);

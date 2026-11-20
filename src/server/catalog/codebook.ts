@@ -619,19 +619,24 @@ export function readPhraseClassifier(
     const authority = authorityFor(field);
     const codes = authority ? codesInFile(tables, authority) : undefined;
     if (authority && codes && key) {
+      const matches = new Set<string>();
       for (const [dmz, label] of codes) {
-        if (typeof label === 'string' && (textKey(dmz) === key || textKey(label) === key)) {
-          return { kind: 'standard', authority, dmz, dmsm: label };
-        }
+        if (typeof label === 'string' && (textKey(dmz) === key || textKey(label) === key)) matches.add(dmz);
       }
+      const names = new Set(matches);
       const aliases = lookupMap(tag, 'aliases', authority);
       if (aliases) {
         for (const [phrase, dmz] of aliases) {
-          if (typeof dmz !== 'string' || textKey(phrase) !== key) continue;
-          const label = codes.get(dmz);
-          if (typeof label !== 'string') continue;
-          return { kind: 'alias', authority, dmz, dmsm: label };
+          if (typeof dmz === 'string' && textKey(phrase) === key && typeof codes.get(dmz) === 'string') matches.add(dmz);
         }
+      }
+      if (matches.size === 1) {
+        const [dmz] = matches;
+        return { kind: names.has(dmz) ? 'standard' : 'alias', authority, dmz, dmsm: String(codes.get(dmz)) };
+      }
+      if (matches.size > 1) {
+        if (linkedDmz && matches.has(linkedDmz)) return { kind: 'linked', authority, dmz: linkedDmz, dmsm: String(codes.get(linkedDmz)) };
+        return { kind: 'group', authority, groupName: key, members: [...matches] };
       }
       const groups = lookupMap(tag, 'query_groups', authority);
       if (groups) {

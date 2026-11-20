@@ -4,6 +4,7 @@ import { Annotation, END, START, StateGraph } from '@langchain/langgraph';
 import { PostgresSaver } from '@langchain/langgraph-checkpoint-postgres';
 import { INITIAL_VOCABULARY_SUPPLEMENTS } from './src/data/schemaCatalog';
 import type { CaseDocument } from './src/types/gold';
+import { currentFieldOptions } from './src/server/catalog/codebook';
 import { observationReader } from './src/server/catalog/workbench';
 import { buildAiSchemaCatalogPayload, mapAiExtractionToCaseDraft } from './src/utils/aiPreanalyze';
 import { getActiveModelSummary } from './src/utils/aiSettings';
@@ -64,15 +65,16 @@ async function processLease(lease: PdfLease) {
         const modelLabel = `${summary.providerLabel} · ${summary.modelName}`;
         requireLease(await updatePdfProgress(lease, 'ai_extracting', '正在调用大模型生成案件草稿', 70, modelLabel));
         const supplements = INITIAL_VOCABULARY_SUPPLEMENTS;
+        const catalog = currentFieldOptions();
         const collectObservations = observationReader();
         const payload = await preanalyzePdf({
           caseId: task.caseId, sourceFilename: task.filename, pageCount: pages.pageCount,
           schemaCatalog: buildAiSchemaCatalogPayload(supplements),
-        }, settings, lines);
+        }, settings, lines, catalog);
         const { nextCase } = mapAiExtractionToCaseDraft(
           createPlaceholderCaseForTask({ ...task, pageCount: pages.pageCount }),
           payload,
-          { supplements, actorLabel: modelLabel, actorRole: mapExtendedRoleToWorkbenchRole(task.createdByRole) },
+          { supplements, catalog, actorLabel: modelLabel, actorRole: mapExtendedRoleToWorkbenchRole(task.createdByRole) },
         );
         const draft = linkLiabilitySources(nextCase, { fileSha256: task.fileSha256, extractionVersion: pages.extractionVersion, lines });
         draft.tagResidue = collectObservations(draft);

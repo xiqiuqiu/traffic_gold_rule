@@ -1,3 +1,5 @@
+import { currentFieldOptions } from './catalog/codebook';
+import { legalFields, legalRows, promptLegalRows } from '../utils/legalCatalog';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 import {
   normalizeOpenAiBaseUrl,
@@ -10,7 +12,7 @@ import {
 } from '../utils/aiResponseParser';
 import type { AiProviderSettings } from '../utils/aiSettings';
 import type { AiPreanalyzePayload, AiSchemaDescriptor } from '../utils/aiPreanalyze';
-import type { LiabilitySourceLine } from '../types/gold';
+import type { LegalCategory, LiabilitySourceLine } from '../types/gold';
 export { loadWorkerModelSettings } from './modelSettings';
 
 interface PreanalyzeRequestBody {
@@ -161,6 +163,7 @@ const PREANALYZE_RESPONSE_SCHEMA = {
           lawArticle: {
             type: Type.STRING,
           },
+          conclusionCode: { type: Type.STRING },
           conclusionLabel: {
             type: Type.STRING,
           },
@@ -186,7 +189,7 @@ function buildOpenAiJsonOutputInstruction(): string {
     '- summary: string（一句话概括核心事实与实体概览）',
     '- entities: Array<{ id: string, kind: "ACC"|"P"|"V"|"E"|"R"|"I"|"O", label: string, subtitle?: string, roleLabel?: string }>',
     '- fieldRecords: Array<{ entityId: string, fieldCode: string, presenceStatus: string, rawValue: string, normalizedValues: string[], evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
-    '- legalConclusions?: Array<{ category: "violation"|"cause"|"liability", subjectId: string, eventId?: string, presenceStatus: string, rawText: string, lawArticle?: string, conclusionLabel: string, evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
+    '- legalConclusions?: Array<{ category: "violation"|"cause"|"liability", subjectId: string, eventId?: string, presenceStatus: string, rawText: string, lawArticle?: string, conclusionCode?: string, conclusionLabel: string, evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
   ].join('\n');
 }
 
@@ -480,7 +483,7 @@ function validatePayload(value: unknown): AiPreanalyzePayload {
   return parsed;
 }
 
-export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiProviderSettings, sourceLines?: LiabilitySourceLine[]): Promise<AiPreanalyzePayload> {
+export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiProviderSettings, sourceLines?: LiabilitySourceLine[], catalog = currentFieldOptions()): Promise<AiPreanalyzePayload> {
   const useOpenAi = settings.provider === 'openai_compatible';
   let pageTexts = body.pageTexts || {};
   if (sourceLines) {
@@ -522,18 +525,22 @@ export async function preanalyzePdf(body: PreanalyzeRequestBody, settings: AiPro
             const syns = f.synonyms ? ` | 参考:${f.synonyms.slice(0, 60)}` : '';
             return `- ${f.fieldCode}(${f.fieldName},适用:${f.applicableKinds.join('/')},${f.allowMultiple ? '多选' : '单选'})${opts}${syns}`;
           }),
-        ...body.schemaCatalog
-          .filter((f) => f.groupCode === 'G08' && f.options?.length)
-          .map(
-            (f) =>
-              `- [legalConclusions ${f.fieldCode}·${f.fieldName}] 推荐标准结论:[${f.options.join(',')}]`,
-          ),
       ].join('\n')
     : '';
+
+  const documentText = (sourceLines ? sourceLines.map(line => line.text) : Object.values(pageTexts)).join('').replace(/\s+/gu, '');
+  const legalChoices = (Object.keys(legalFields) as LegalCategory[]).map(category => {
+    const rows = legalRows(catalog, category);
+    const candidates = category === 'liability' ? rows : promptLegalRows(rows, documentText);
+    return `${category} (${legalFields[category]}): ${JSON.stringify(candidates.map(row => [row.code, row.value, ...row.aliases]))}`;
+  });
 
   const promptText = [
     `样本文件: ${body.sourceFilename || body.caseId || '未命名PDF'}（共 ${body.pageCount || sortedPages.length || 1} 页）`,
     '',
+    '【法律结论码表候选：代码、名称、别名】',
+    ...legalChoices,
+    'rawText 和 evidences 保留文书原话。只有原文明确对应唯一候选时才填写 conclusionCode 和该名称。多义、同名多码或未命中时，conclusionCode 留空，conclusionLabel 保留文书用词供核对。不得根据法条或相似描述猜测代码。',
     '【目标字段定义与受控词表】',
     schemaSummary || '请按道路交通事故认定书标准字段体系（G01-G06）提取对象与字段记录。',
     '',

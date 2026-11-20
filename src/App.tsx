@@ -1,3 +1,4 @@
+import { canonicalLegalDraft, canonicalLegalItem, legalFields } from './utils/legalCatalog';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
@@ -280,16 +281,30 @@ export default function App() {
   const [catalogOptions, setCatalogOptions] = useState<CatalogOptions>({});
   useEffect(() => {
     if (systemView !== 'detail') return;
-    let active = true;
     setCatalogOptions({});
-    if (hasPermission(rolePermissions, activeIdentity.role, 'task:view')) {
-      catalogApi.fieldOptions(activeIdentity.id).then(options => {
-        if (active) setCatalogOptions(options);
-      }).catch(() => {
-        if (active) setPermissionNotice('标签库暂时不可用，当前显示案件原有词项。');
-      });
-    }
-    return () => { active = false; };
+    if (!hasPermission(rolePermissions, activeIdentity.role, 'task:view')) return;
+    let revision = 0;
+    const refresh = async () => {
+      const request = ++revision;
+      try {
+        const options = await catalogApi.fieldOptions(activeIdentity.id);
+        if (revision !== request) return;
+        setCatalogOptions(options);
+        setCases(previous => previous.map(doc => {
+          const normalized = canonicalLegalDraft(doc, options);
+          if (machineDrafts.current.has(doc)) machineDrafts.current.add(normalized);
+          return normalized;
+        }));
+      } catch {
+        if (revision === request) {
+          setCatalogOptions({});
+          setPermissionNotice('标签库暂时不可用，请重新打开详情加载标准结论。');
+        }
+      }
+    };
+    void refresh();
+    window.addEventListener('focus', refresh);
+    return () => { revision++; window.removeEventListener('focus', refresh); };
   }, [systemView, activeIdentity.id, activeIdentity.role, rolePermissions]);
 
   const notifyPermissionBlocked = useCallback((message: string) => {
@@ -783,6 +798,17 @@ export default function App() {
 
   const handleSaveLegalItem = (item: LegalConclusionItem, auditNote?: string) => {
     const prevItem = activeCase.legalConclusions.find((x) => x.id === item.id);
+    if (catalogOptions[legalFields[item.category]]) {
+      item = canonicalLegalItem(item, catalogOptions);
+    } else if (item.conclusionCode !== prevItem?.conclusionCode || item.conclusionLabel !== (prevItem?.conclusionLabel || '')) {
+      notifyPermissionBlocked('请先加载标签库再选择标准结论。');
+      return;
+    }
+    if (item.presenceStatus === 'present' && !item.conclusionCode && prevItem?.reviewStatus !== item.reviewStatus &&
+        (item.reviewStatus === 'checked' || item.reviewStatus === 'specialist_review')) {
+      notifyPermissionBlocked('标准结论待核对，请先选择对应码表项。');
+      return;
+    }
     item = clearChangedLineIds(item, prevItem);
     if (prevItem?.sourceLocation && liabilitySourceKey(prevItem, activeCase.entities) !== liabilitySourceKey(item, activeCase.entities)) {
       item = { ...item, sourceLocation: { status: 'needs_review', reason: '记录已修改，需重新核对原文。' } };
@@ -1298,6 +1324,7 @@ export default function App() {
     setAiError(null);
 
     try {
+      const currentCatalog = await catalogApi.fieldOptions(activeIdentity.id);
       const totalChars = Object.values(pdfPageTexts)
         .join('')
         .replace(/\s+/g, '').length;
@@ -1353,6 +1380,7 @@ export default function App() {
       const baseCase = cases.find((c) => c.caseId === targetCaseId) || activeCase;
       const merged = mapAiExtractionToCaseDraft(baseCase, aiPayload, {
         supplements,
+        catalog: currentCatalog,
         mergeMode: aiMergeMode,
         actorRole: userRole,
         actorLabel,

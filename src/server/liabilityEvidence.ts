@@ -1,3 +1,4 @@
+import { liabilityGrades } from '../utils/legalCatalog';
 import type { EntityItem, LegalConclusionItem, LiabilitySourceLine, LiabilitySourceLocation } from '../types/gold';
 import { liabilitySourceKey, validSourceLine } from '../utils/liabilitySourceKey';
 
@@ -150,7 +151,9 @@ export function resolveLiabilitySource(
   const others = parties.filter(entity => entity !== subject).map(subjectName).filter(Boolean);
   if (!name || others.includes(name)) return review('责任主体无法唯一辨认。');
 
-  const label = labels[item.conclusionLabel] ?? item.conclusionLabel;
+  const label = item.conclusionCode === undefined
+    ? labels[item.conclusionLabel] ?? item.conclusionLabel
+    : liabilityGrades[item.conclusionCode];
   if (!['全部责任', '主要责任', '同等责任', '次要责任', '无责任'].includes(label) ||
       (item.presenceStatus === 'explicit_negative' && label !== '无责任')) return review('责任等级无法确认。');
   const eventStages = event ? stages(normalize(event.label + (event.subtitle ?? ''))) : [];

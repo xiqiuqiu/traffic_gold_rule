@@ -121,6 +121,9 @@ test('worker restarts from the text checkpoint and retries a transient model fai
     assert.equal(calls, 3);
     assert(receivedCase);
     assert.equal(await artifactCount(), 1);
+    assert.equal(result.draft.legalConclusions[0].conclusionCode, '5');
+    assert.equal(result.draft.legalConclusions[0].conclusionLabel, '无责');
+    assert.match(lastPrompt, /\["5","无责","无责任"\]/);
     assert.equal(result.draft.legalConclusions[0].evidences[0].page, 2);
     assert.equal(result.draft.legalConclusions[0].evidences[0].quote, '王小明无责任');
     const location = result.draft.legalConclusions[0].sourceLocation;

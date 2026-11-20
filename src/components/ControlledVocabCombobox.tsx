@@ -17,6 +17,7 @@ interface ControlledVocabComboboxProps {
   placeholder?: string;
   emptyMatchText?: string;
   compact?: boolean;
+  useStandardCode?: boolean;
 }
 
 export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = ({
@@ -30,6 +31,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
   placeholder,
   emptyMatchText,
   compact = false,
+  useStandardCode = false,
 }) => {
   const generatedId = useId();
   const inputId = id || `vocab-combo-${generatedId}`;
@@ -39,7 +41,9 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
   const inputRef = useRef<HTMLInputElement>(null);
   const optionRefs = useRef<Array<HTMLLIElement | null>>([]);
 
-  const singleValue = !multiple ? selectedValues[0] || '' : '';
+  const selectedKey = !multiple ? selectedValues[0] || '' : '';
+  const keyOf = (option: ControlledVocabOption) => useStandardCode ? option.standardCode! : option.value;
+  const singleValue = useStandardCode ? options.find(o => o.standardCode === selectedKey)?.value || '' : selectedKey;
 
   const [isOpen, setIsOpen] = useState(false);
   const [isFiltering, setIsFiltering] = useState(false);
@@ -106,7 +110,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
       return;
     }
     if (!multiple && singleValue && !startFiltering) {
-      const selectedIdx = list.findIndex((o) => o.value === singleValue);
+      const selectedIdx = list.findIndex((o) => keyOf(o) === selectedKey);
       setHighlightIndex(selectedIdx >= 0 ? selectedIdx : 0);
     } else {
       setHighlightIndex(0);
@@ -131,7 +135,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
     }
 
     onChangeValues([optionValue]);
-    setInputText(optionValue);
+    setInputText(useStandardCode ? options.find(o => o.standardCode === optionValue)?.value || '' : optionValue);
     setIsFiltering(false);
     setIsOpen(false);
   };
@@ -179,7 +183,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
     if (e.key === 'Enter') {
       if (isOpen && highlightIndex >= 0 && filteredOptions[highlightIndex]) {
         e.preventDefault();
-        commitOption(filteredOptions[highlightIndex].value, 'keyboard');
+        commitOption(keyOf(filteredOptions[highlightIndex]), 'keyboard');
       } else if (!multiple && allowCustomInput && isOpen) {
         setIsOpen(false);
         setIsFiltering(false);
@@ -339,7 +343,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
             </li>
           ) : (
             filteredOptions.map((opt, idx) => {
-              const isSelected = selectedValues.includes(opt.value);
+              const isSelected = selectedValues.includes(keyOf(opt));
               const isHighlighted = idx === highlightIndex;
               const showSynonymHint =
                 Boolean(opt.synonymsText) &&
@@ -349,7 +353,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
 
               return (
                 <li
-                  key={opt.value}
+                  key={keyOf(opt)}
                   id={`${listboxId}-opt-${idx}`}
                   ref={(el) => {
                     optionRefs.current[idx] = el;
@@ -359,7 +363,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
                   onMouseEnter={() => setHighlightIndex(idx)}
                   onMouseDown={(e) => {
                     e.preventDefault();
-                    commitOption(opt.value, 'mouse');
+                    commitOption(keyOf(opt), 'mouse');
                   }}
                   className={`flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-xs transition-colors ${
                     isHighlighted
@@ -395,6 +399,7 @@ export const ControlledVocabCombobox: React.FC<ControlledVocabComboboxProps> = (
                   </div>
 
                   <div className="flex shrink-0 items-center gap-1.5">
+                    {useStandardCode && <span className="font-mono-tabular text-slate-500">{opt.standardCode}</span>}
                     {opt.source === 'supplement' && (
                       <span className="text-[11px] text-amber-700">补充词表</span>
                     )}

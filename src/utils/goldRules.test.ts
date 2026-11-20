@@ -614,9 +614,9 @@ test('scanViolationLinkMatches scans D10.F058 controlled vocab, supplements, and
   const newStats = computeEntityWorkbenchStats(withNewVio, 'P01', INITIAL_VOCABULARY_SUPPLEMENTS);
   assert.equal(newStats.blocking_or_error, baselineStats.blocking_or_error + 1);
 
-  // One-click apply all populates standard conclusion and entity/vocab links, but keeps error until confirmed
+  // One-click apply all preserves the standard conclusion and applies entity/vocab links, but keeps error until confirmed
   const linked = applyAllViolationLinks(newVio, scan);
-  assert.equal(linked.conclusionLabel, '行经人行横道未停车让行');
+  assert.equal(linked.conclusionLabel, newVio.conclusionLabel);
   assert.ok((linked.linkedEntityIds || []).includes('V01'));
   assert.ok((linked.linkedEntityIds || []).includes('R01'));
   assert.equal(linked.linkConsistencyConfirmed, false);
@@ -688,7 +688,7 @@ test('applyViolationVocabLink and applyViolationEntityLink update fields determi
   const primaryMatch = scan.vocabMatches.find((m) => m.isPrimaryStandard);
   assert.ok(primaryMatch);
   const afterVocab = applyViolationVocabLink(baseVio, primaryMatch);
-  assert.equal(afterVocab.conclusionLabel, '行经人行横道未停车让行');
+  assert.equal(afterVocab.conclusionLabel, baseVio.conclusionLabel);
   assert.ok((afterVocab.linkedVocabTerms || []).includes(primaryMatch.vocabKey));
   assert.equal(afterVocab.linkConsistencyConfirmed, false);
 

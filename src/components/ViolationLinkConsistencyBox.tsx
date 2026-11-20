@@ -132,7 +132,7 @@ export const ViolationLinkConsistencyBox: React.FC<ViolationLinkConsistencyBoxPr
                         : 'border-slate-200 bg-slate-100 text-slate-600'
                     }`}
                   >
-                    {m.isPrimaryStandard ? '违法词表' : '辅助词表'}
+                    {m.isPrimaryStandard ? '违法参考词' : '辅助词表'}
                   </span>
                   <span className="font-mono-tabular font-semibold text-slate-800">
                     {m.fieldCode}

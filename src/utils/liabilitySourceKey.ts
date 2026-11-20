@@ -5,7 +5,7 @@ export function liabilitySourceKey(item: LegalConclusionItem, entities: EntityIt
     .map(e => [e.id, e.kind, e.label, e.subtitle]);
   return JSON.stringify([
     item.id, item.category, item.subjectId, item.eventId, identities,
-    item.presenceStatus, item.conclusionLabel, item.rawText,
+    item.presenceStatus, item.conclusionCode ?? item.conclusionLabel, item.rawText,
     item.evidences.map(evidence => [evidence.page, evidence.quote, evidence.lineIds]),
   ]);
 }

@@ -20,9 +20,11 @@ import {
   deriveTimeBucket,
   generateNextEntityId,
   hasLiabilityScopeConflict,
-  scanViolationLinkMatches,
   validateFieldRecord,
 } from './goldRules';
+
+import type { CatalogOptions } from '../types/catalog';
+import { legalFields, legalRows, matchLegalConclusion } from './legalCatalog';
 
 export type AiMergeMode = 'merge_missing' | 'overwrite_drafts';
 
@@ -53,6 +55,7 @@ export interface AiExtractedLegalItem {
   rawText: string;
   lawArticle?: string;
   conclusionLabel: string;
+  conclusionCode?: string;
   evidences: AiEvidence[];
 }
 
@@ -114,7 +117,8 @@ export function buildAiSchemaCatalogPayload(
   const suppByCode = new Map(supplements.map((s) => [s.fieldCode, s]));
   return MASTER_FIELD_SCHEMA.map((def) => {
     const supp = suppByCode.get(def.fieldCode);
-    const vocabOpts = buildControlledVocabOptions(def, supp).map((o) => o.value);
+    const legal = Object.values(legalFields).some(code => code === def.fieldCode);
+    const vocabOpts = legal ? [] : buildControlledVocabOptions(def, supp).map((o) => o.value);
     return {
       fieldCode: def.fieldCode,
       fieldName: def.fieldName,
@@ -203,6 +207,7 @@ export function mapAiExtractionToCaseDraft(
   payload: AiPreanalyzePayload,
   options?: {
     supplements?: VocabularySupplementItem[];
+    catalog?: CatalogOptions;
     mergeMode?: AiMergeMode;
     actorRole?: UserRole;
     actorLabel?: string;
@@ -442,12 +447,14 @@ export function mapAiExtractionToCaseDraft(
     const presenceStatus = normalizeAiPresenceStatus(rawLeg.presenceStatus);
     const rawText = (rawLeg.rawText || '').trim();
     const conclusionLabel = (rawLeg.conclusionLabel || '').trim();
-    if (!rawText && !conclusionLabel) continue;
+    if (!rawText && !conclusionLabel && !rawLeg.conclusionCode) continue;
+    const row = matchLegalConclusion(legalRows(options?.catalog ?? {}, rawLeg.category), conclusionLabel || rawText, rawLeg.conclusionCode);
 
     const alreadyCovered = nextLegal.some((l) => {
       if (l.subjectId !== subjectId || l.category !== rawLeg.category) return false;
       if (isLiability) return hasLiabilityScopeConflict(l, { subjectId, eventId });
-      return l.conclusionLabel === conclusionLabel || l.rawText === rawText || mergeMode === 'merge_missing';
+      return (row && l.conclusionCode === row.code && l.eventId === eventId) || (rawText && l.rawText === rawText) ||
+        (mergeMode === 'merge_missing' && activeCase.legalConclusions.some(original => original.id === l.id));
     });
     if (alreadyCovered) continue;
 
@@ -469,7 +476,10 @@ export function mapAiExtractionToCaseDraft(
       presenceStatus,
       rawText,
       lawArticle: (rawLeg.lawArticle || '').trim(),
-      conclusionLabel,
+      conclusionCode: row?.code ?? '',
+      conclusionLabel: row?.value ?? '',
+      unmatchedConclusionCode: row ? undefined : rawLeg.conclusionCode || undefined,
+      unmatchedConclusion: row ? undefined : conclusionLabel || rawLeg.conclusionCode || rawText,
       causalLinkStatus: rawLeg.category === 'liability' ? undefined : 'unspecified',
       linkedViolationIds: [],
       linkedCauseIds: [],
@@ -481,17 +491,6 @@ export function mapAiExtractionToCaseDraft(
       disputeReason: '',
       adjudicatorNote: '',
     };
-
-    if (draftLegalItem.category === 'violation') {
-      const scan = scanViolationLinkMatches(draftLegalItem, nextEntities, supplements);
-      const primaryHits = scan.vocabMatches.filter((m) => m.isPrimaryStandard);
-      const hasExactLabel = primaryHits.some(
-        (m) => m.standardTerm === draftLegalItem.conclusionLabel.trim(),
-      );
-      if (!hasExactLabel && primaryHits.length > 0) {
-        draftLegalItem.conclusionLabel = primaryHits[0].standardTerm;
-      }
-    }
 
     nextLegal.push(draftLegalItem);
     createdLegalCount += 1;

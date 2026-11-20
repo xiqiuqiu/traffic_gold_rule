@@ -40,7 +40,7 @@ export function LinkCauseMenu({ violation, causes, onSave, onCreate }: LinkCause
                   }}>
                     <span className="min-w-0 flex-1">
                       <span className="block break-words font-medium">{cause.conclusionLabel || cause.rawText || '待填写原因'}</span>
-                      <span className="text-slate-500">{cause.eventId || '整起事故'} · {cause.id}</span>
+                      <span className="text-slate-500">{cause.eventId || '未限定阶段'} · {cause.id}</span>
                     </span>
                     {linked && <span className="shrink-0 text-slate-500">已关联</span>}
                   </Menu.Item>

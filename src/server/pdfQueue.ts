@@ -1,3 +1,5 @@
+import { canonicalLegalDraft } from '../utils/legalCatalog';
+import { currentFieldOptions } from './catalog/codebook';
 import { accidentTitle } from '../utils/accidentTitle';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
@@ -319,8 +321,14 @@ export async function getPdfDraft(id: string): Promise<CaseDocument | null> {
     FROM pdf_tasks t LEFT JOIN pdf_run_artifacts a ON a.run_id=t.run_id AND a.kind='text'
     WHERE t.id=$1`, [id]);
   const row = rows[0];
-  const draft: CaseDocument | null = row?.draft ?? null;
-  if (!draft || !row.version || draft.fileSha256 !== `sha256:${row.sha256}`) return draft;
+  const stored: CaseDocument | undefined = row?.draft;
+  if (!stored) return null;
+  const draft = canonicalLegalDraft(stored, currentFieldOptions());
+  if (draft !== stored) {
+    // Preserve immutable run artifacts and never replace a concurrently edited draft.
+    await pool.query('UPDATE pdf_tasks SET draft=$2 WHERE id=$1 AND draft=$3::jsonb', [id, draft, stored]);
+  }
+  if (!row.version || draft.fileSha256 !== `sha256:${row.sha256}`) return draft;
   const missing = draft.legalConclusions.filter(item => item.category === 'liability' &&
     (!item.sourceLocation || (item.sourceLocation.status === 'verified' && !getVerifiedLiabilitySource(item, draft))));
   if (missing.length) {
@@ -530,6 +538,7 @@ export async function readPdfArtifact<T>(lease: PdfLease, kind: ArtifactKind): P
 }
 
 export async function completePdfTask(lease: PdfLease, draft: CaseDocument): Promise<boolean> {
+  draft = canonicalLegalDraft(draft, currentFieldOptions());
   if (draft.caseId !== lease.task.caseId) throw new Error('草稿案件与当前任务不一致');
   const count = draft.fieldRecords.length + draft.legalConclusions.length;
   const patch = { status: 'pending_review', progress: 100, stageLabel: `提取 ${count} 项结构化草稿，等待人工审核`,
