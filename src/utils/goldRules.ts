@@ -442,6 +442,7 @@ export function buildGoldExportPayload(caseDoc: CaseDocument, maskPii: boolean) 
           event_id: l.eventId || null,
           presence_status: l.presenceStatus,
           law_article: l.lawArticle || null,
+          ...(l.behaviorFact ? { behavior_fact: maybeMask(l.behaviorFact) } : {}),
           conclusion_code: l.conclusionCode || null,
           conclusion_label: l.conclusionLabel || null,
           raw_text: maybeMask(l.rawText),
@@ -599,6 +600,10 @@ export function buildGoldV02ExportPayload(caseDoc: CaseDocument, maskPii: boolea
         subject_id: l.subjectId,
         presence: l.presenceStatus,
       };
+      if (l.category === 'violation') {
+        if (l.behaviorFact) record.behavior_fact = maybeMask(l.behaviorFact, false);
+        if (l.lawArticle) record.law_article = l.lawArticle;
+      }
       if (l.rawText) {
         record.raw_value = maybeMask(l.rawText, false);
       }

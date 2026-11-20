@@ -1,6 +1,7 @@
 import type { CatalogOption, CatalogOptions } from '../types/catalog';
 import type { CaseDocument, LegalCategory, LegalConclusionItem } from '../types/gold';
 import { textKey } from '../server/catalog/textKey';
+import { reconcileViolationDrafts } from './violationDrafts';
 
 export const legalFields = { violation: 'D10.F058', cause: 'D10.F059', liability: 'D10.F060' } as const;
 
@@ -54,6 +55,6 @@ export function canonicalLegalItem(item: LegalConclusionItem, catalog: CatalogOp
 }
 
 export function canonicalLegalDraft(doc: CaseDocument, catalog: CatalogOptions): CaseDocument {
-  const items = doc.legalConclusions.map(item => canonicalLegalItem(item, catalog));
-  return items.some((item, i) => item !== doc.legalConclusions[i]) ? { ...doc, legalConclusions: items } : doc;
+  const items = reconcileViolationDrafts(doc.legalConclusions.map(item => canonicalLegalItem(item, catalog)));
+  return items.length !== doc.legalConclusions.length || items.some((item, i) => item !== doc.legalConclusions[i]) ? { ...doc, legalConclusions: items } : doc;
 }

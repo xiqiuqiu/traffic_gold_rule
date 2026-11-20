@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { INITIAL_VOCABULARY_SUPPLEMENTS, MASTER_FIELD_SCHEMA } from '../data/schemaCatalog';
 import { CaseDocument } from '../types/gold';
+import { canonicalLegalDraft } from './legalCatalog';
 import {
   AiPreanalyzePayload,
   buildAiSchemaCatalogPayload,
@@ -317,3 +318,95 @@ test('同一主体分阶段责任分别保留，重跑保留人工修订和各�
   }
 });
 
+
+test('同段不同违法分别选码，同一事实合并依据，补缺重跑幂等且保留已复核项', () => {
+  const shared = '违规驶入非机动车道，行驶中观察不周。';
+  const act = (behaviorFact: string, conclusionLabel: string, lawArticle: string, page = 1) => ({
+    category: 'violation' as const, subjectId: 'P01', presenceStatus: 'present', behaviorFact,
+    rawText: shared, conclusionLabel, lawArticle, evidences: [{ page, quote: shared }],
+  });
+  const drive = act('违规驶入非机动车道', '机动车不走机动车道', '法条甲');
+  const observe = act('行驶中观察不周', '观察不周', '法条乙');
+  const catalog = { 'D10.F058': [
+    { code: '1018', value: drive.conclusionLabel, aliases: [] },
+    ...['X', 'Y'].map(code => ({ code, value: observe.conclusionLabel, aliases: [] })),
+  ] };
+  const payload: AiPreanalyzePayload = {
+    entities: [{ kind: 'P', id: 'P01', label: '甲某' }], fieldRecords: [],
+    legalConclusions: [drive, observe, { ...drive, lawArticle: '法条丙', evidences: [{ page: 2, quote: '法条丙' }] }],
+  };
+  const run = (doc: CaseDocument, legs = payload.legalConclusions) =>
+    mapAiExtractionToCaseDraft(doc, { ...payload, legalConclusions: legs }, { catalog }).nextCase;
+  const first = run(makeLocalEmptyCase());
+  assert.deepEqual(first.legalConclusions.map(x => [x.behaviorFact, x.conclusionCode, x.lawArticle]), [
+    [drive.behaviorFact, '1018', '法条甲；法条丙'], [observe.behaviorFact, '', '法条乙'],
+  ]);
+  assert.equal(first.legalConclusions[0].evidences.length, 2);
+  assert.deepEqual(run(first).legalConclusions, first.legalConclusions);
+  const existing = run(makeLocalEmptyCase(), [drive]);
+  existing.legalConclusions[0].reviewStatus = 'checked';
+  const merged = run(existing);
+  assert.deepEqual(merged.legalConclusions[0], existing.legalConclusions[0]);
+  assert.equal(merged.legalConclusions[1].behaviorFact, observe.behaviorFact);
+  const sameCode = run(makeLocalEmptyCase(), [drive, { ...observe, conclusionLabel: drive.conclusionLabel }]);
+  assert.equal(sameCode.legalConclusions.length, 2);
+  const legacy = run(makeLocalEmptyCase(), [drive, observe].map(row => ({ ...row, behaviorFact: undefined })));
+  assert.equal(legacy.legalConclusions.length, 2);
+  const old = run(makeLocalEmptyCase(), [{ ...drive, behaviorFact: undefined, conclusionLabel: '原认定' }]);
+  const upgraded = run(old, [drive, observe]);
+  assert.deepEqual(upgraded.legalConclusions.map(v => [v.behaviorFact, v.conclusionCode]), [
+    [drive.behaviorFact, '1018'], [observe.behaviorFact, ''],
+  ]);
+  assert.equal(upgraded.legalConclusions[0].id, old.legalConclusions[0].id);
+  assert.equal(upgraded.legalConclusions[0].rawText, shared);
+  const ambiguous = run(old, [drive, { ...observe, lawArticle: drive.lawArticle }]);
+  assert.equal(ambiguous.legalConclusions.length, 3);
+  assert.deepEqual(ambiguous.legalConclusions[0], old.legalConclusions[0]);
+  old.legalConclusions[0].reviewStatus = 'checked';
+  const protectedMerge = run(old, [{ ...drive, behaviorFact: shared, lawArticle: '法条丙' }, drive]);
+  assert.equal(protectedMerge.legalConclusions.length, 2);
+  assert.deepEqual(protectedMerge.legalConclusions[0], old.legalConclusions[0]);
+  old.legalConclusions[0].eventId = 'E01';
+  assert.equal(run(old, [drive]).legalConclusions.length, 2);
+  const conflict = run(makeLocalEmptyCase(), [drive, { ...drive, conclusionCode: 'wrong' }]);
+  assert.equal(conflict.legalConclusions.length, 1);
+  assert.equal(conflict.legalConclusions[0].conclusionCode, '');
+});
+
+test('旧违法与逐项草稿双向唯一才合并，保留原文、证据及所有原因引用', () => {
+  const payload: AiPreanalyzePayload = { entities: [{ kind: 'P', id: 'P02', label: '乙' }], fieldRecords: [] };
+  const phrase = '未确保安全，使其车辆前货叉空悬于非机动车道内';
+  const snippet = '且' + phrase;
+  const original = '乙未取得操作资格证，违规驾驶叉车，' + snippet;
+  const entry = { category: 'violation' as const, subjectId: 'P02', presenceStatus: 'present',
+    conclusionLabel: '', rawText: original, lawArticle: '第二十二条第一款', evidences: [{ page: 1, quote: original }] };
+  const oldDoc = mapAiExtractionToCaseDraft(makeLocalEmptyCase(), { ...payload, legalConclusions: [entry] }).nextCase;
+  const old = oldDoc.legalConclusions[0];
+  const fact = { ...old, id: 'VIO-AI-49', rawText: snippet, behaviorFact: phrase.replace('其', ''),
+    evidences: [{ id: 'source-2', page: 2, quote: snippet }] };
+  const other = { ...fact, id: 'VIO-AI-47', behaviorFact: '驾驶未登记的叉车', lawArticle: '第八条' };
+  const cause = { ...old, id: 'cause', category: 'cause' as const, linkedViolationIds: [fact.id, other.id, old.id] };
+  const doc = { ...oldDoc, legalConclusions: [old, fact, other, cause] };
+  const fixed = canonicalLegalDraft(doc, {});
+  assert.deepEqual(fixed.legalConclusions.map(v => v.id), [old.id, other.id, cause.id]);
+  assert.deepEqual(fixed.legalConclusions[2].linkedViolationIds, [old.id, other.id]);
+  assert.equal(fixed.legalConclusions[0].rawText, original);
+  assert.equal(fixed.legalConclusions[0].behaviorFact, fact.behaviorFact);
+  assert.equal(fixed.legalConclusions[0].evidences.length, 2);
+  assert.equal(canonicalLegalDraft(fixed, {}), fixed);
+  const withoutPossessive = { ...fact, rawText: snippet.replace('其', '') };
+  assert.equal(canonicalLegalDraft({ ...doc, legalConclusions: [old, withoutPossessive] }, {}).legalConclusions.length, 1);
+  const run = (doc: CaseDocument, wording = fact.behaviorFact) => mapAiExtractionToCaseDraft(doc, { ...payload,
+    legalConclusions: [{ ...entry, rawText: snippet, behaviorFact: wording }] }).nextCase.legalConclusions;
+  assert.equal(run(oldDoc).length, 1);
+  assert.deepEqual(run(doc, phrase).map(x => x.id), [old.id, other.id, cause.id]);
+  for (const changed of [
+    { ...fact, behaviorFact: '确保安全，使车辆前货叉空悬于非机动车道内' },
+    { ...fact, behaviorFact: phrase.replace('其车辆', '其他车辆') },
+    { ...fact, eventId: 'E02' }, { ...fact, lawArticle: '第八条' }, { ...fact, reviewStatus: 'checked' as const },
+  ]) {
+    assert.equal(canonicalLegalDraft({ ...doc, legalConclusions: [old, changed] }, {}).legalConclusions.length, 2);
+  }
+  const secondCandidate = { ...fact, id: 'VIO-AI-50', behaviorFact: '违规驾驶叉车', rawText: original };
+  assert.equal(canonicalLegalDraft({ ...doc, legalConclusions: [old, fact, secondCandidate] }, {}).legalConclusions.length, 3);
+});

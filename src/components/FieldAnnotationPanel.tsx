@@ -1460,6 +1460,9 @@ export const FieldAnnotationPanel: React.FC<FieldAnnotationPanelProps> = ({
                       )}
 
                       <div className="mt-2">
+                        {item.behaviorFact && item.behaviorFact !== item.rawText && (
+                          <p className="mb-1 text-xs text-slate-700">行为事实 · {item.behaviorFact}</p>
+                        )}
                         <label className="mb-1 block text-xs font-medium text-slate-700">
                           文书原文结论
                         </label>

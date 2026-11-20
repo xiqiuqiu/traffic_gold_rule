@@ -120,6 +120,7 @@ export interface LegalConclusionItem {
   presenceStatus: PresenceStatus;
   rawText: string;
   lawArticle: string;
+  behaviorFact?: string;
   conclusionLabel: string;
   conclusionCode?: string;
   unmatchedConclusion?: string;

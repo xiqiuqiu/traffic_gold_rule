@@ -24,6 +24,8 @@ import {
 } from './goldRules';
 
 import type { CatalogOptions } from '../types/catalog';
+import { textKey } from '../server/catalog/textKey';
+import { addViolationSources, legacyViolationSupports, reconcileViolationDrafts, sameBehaviorFact } from './violationDrafts';
 import { legalFields, legalRows, matchLegalConclusion } from './legalCatalog';
 
 export type AiMergeMode = 'merge_missing' | 'overwrite_drafts';
@@ -54,6 +56,7 @@ export interface AiExtractedLegalItem {
   presenceStatus: PresenceStatus | string;
   rawText: string;
   lawArticle?: string;
+  behaviorFact?: string;
   conclusionLabel: string;
   conclusionCode?: string;
   evidences: AiEvidence[];
@@ -200,6 +203,18 @@ function isValidEntityIdForKind(id: string, kind: EntityKind): boolean {
   if (kind === 'ACC') return id === 'ACC';
   const prefix = ENTITY_KIND_META[kind].prefix;
   return new RegExp(`^${prefix}\\d{2,}$`).test(id);
+}
+
+function sameViolation(a: LegalConclusionItem, b: LegalConclusionItem) {
+  if (a.category !== 'violation' || a.subjectId !== b.subjectId || a.eventId !== b.eventId ||
+      a.presenceStatus !== b.presenceStatus) return false;
+  const factA = textKey(a.behaviorFact || a.rawText);
+  const factB = textKey(b.behaviorFact || b.rawText);
+  if (a.behaviorFact && b.behaviorFact) return sameBehaviorFact(a, b);
+  if (a.behaviorFact || b.behaviorFact) return Boolean(factA && factA === factB);
+  // Legacy responses can quote the same whole paragraph for two different acts.
+  const label = (item: LegalConclusionItem) => textKey(item.conclusionCode || item.unmatchedConclusion || item.conclusionLabel);
+  return factA === factB && label(a) === label(b) && Boolean(factA || label(a));
 }
 
 export function mapAiExtractionToCaseDraft(
@@ -425,11 +440,12 @@ export function mapAiExtractionToCaseDraft(
   }
 
   // Optional legal conclusion drafts if returned by Gemini
-  const nextLegal: LegalConclusionItem[] = activeCase.legalConclusions.map((l) => ({
+  const nextLegal: LegalConclusionItem[] = reconcileViolationDrafts(activeCase.legalConclusions).map((l) => ({
     ...l,
     evidences: l.evidences.map((ev) => ({ ...ev })),
   }));
   let createdLegalCount = 0;
+  const violationGroups: LegalConclusionItem[][] = [];
 
   for (const rawLeg of payload.legalConclusions || []) {
     if (!['violation', 'cause', 'liability'].includes(rawLeg.category)) continue;
@@ -447,10 +463,12 @@ export function mapAiExtractionToCaseDraft(
     const presenceStatus = normalizeAiPresenceStatus(rawLeg.presenceStatus);
     const rawText = (rawLeg.rawText || '').trim();
     const conclusionLabel = (rawLeg.conclusionLabel || '').trim();
-    if (!rawText && !conclusionLabel && !rawLeg.conclusionCode) continue;
-    const row = matchLegalConclusion(legalRows(options?.catalog ?? {}, rawLeg.category), conclusionLabel || rawText, rawLeg.conclusionCode);
+    const behaviorFact = rawLeg.category === 'violation' && typeof rawLeg.behaviorFact === 'string'
+      ? rawLeg.behaviorFact.trim() : '';
+    if (!rawText && !behaviorFact && !conclusionLabel && !rawLeg.conclusionCode) continue;
+    const row = matchLegalConclusion(legalRows(options?.catalog ?? {}, rawLeg.category), conclusionLabel || behaviorFact || rawText, rawLeg.conclusionCode);
 
-    const alreadyCovered = nextLegal.some((l) => {
+    const alreadyCovered = rawLeg.category !== 'violation' && nextLegal.some((l) => {
       if (l.subjectId !== subjectId || l.category !== rawLeg.category) return false;
       if (isLiability) return hasLiabilityScopeConflict(l, { subjectId, eventId });
       return (row && l.conclusionCode === row.code && l.eventId === eventId) || (rawText && l.rawText === rawText) ||
@@ -474,12 +492,13 @@ export function mapAiExtractionToCaseDraft(
       subjectId,
       eventId,
       presenceStatus,
-      rawText,
+      rawText: rawText || behaviorFact,
+      ...(behaviorFact ? { behaviorFact } : {}),
       lawArticle: (rawLeg.lawArticle || '').trim(),
       conclusionCode: row?.code ?? '',
       conclusionLabel: row?.value ?? '',
       unmatchedConclusionCode: row ? undefined : rawLeg.conclusionCode || undefined,
-      unmatchedConclusion: row ? undefined : conclusionLabel || rawLeg.conclusionCode || rawText,
+      unmatchedConclusion: row ? undefined : conclusionLabel || rawLeg.conclusionCode || behaviorFact || rawText,
       causalLinkStatus: rawLeg.category === 'liability' ? undefined : 'unspecified',
       linkedViolationIds: [],
       linkedCauseIds: [],
@@ -492,8 +511,54 @@ export function mapAiExtractionToCaseDraft(
       adjudicatorNote: '',
     };
 
-    nextLegal.push(draftLegalItem);
-    createdLegalCount += 1;
+    if (draftLegalItem.category === 'violation') {
+      const group = violationGroups.find(([first]) => sameViolation(first, draftLegalItem));
+      if (group) group.push(draftLegalItem);
+      else violationGroups.push([draftLegalItem]);
+    } else {
+      nextLegal.push(draftLegalItem);
+      createdLegalCount += 1;
+    }
+  }
+
+  const violations = violationGroups.map(group => {
+    const [item, ...otherMentions] = group;
+    for (const other of otherMentions) addViolationSources(item, other);
+    if (group.some(other => other.conclusionCode !== item.conclusionCode)) {
+      item.unmatchedConclusion = [...new Set(group.map(v => v.conclusionCode
+        ? `${v.conclusionLabel}（${v.conclusionCode}）` : v.unmatchedConclusion))].join(' / ');
+      item.unmatchedConclusionCode = undefined;
+      item.conclusionCode = '';
+      item.conclusionLabel = '';
+    }
+    return item;
+  });
+  const storedViolations = nextLegal.filter(item => item.category === 'violation');
+  const matchedIds = new Set<string>();
+  for (const item of violations) {
+    let existing = storedViolations.find(record => sameViolation(record, item));
+    if (!existing) {
+      // Old drafts can summarize several acts in one paragraph. Reuse an ID only for an unambiguous fact and citation.
+      const possible = storedViolations.filter(record => legacyViolationSupports(record, item));
+      if (possible.length === 1 && violations.filter(other => legacyViolationSupports(possible[0], other)).length === 1) {
+        existing = possible[0];
+      }
+    }
+    if (!existing || matchedIds.has(existing.id)) {
+      nextLegal.push(item);
+      createdLegalCount += 1;
+    } else {
+      matchedIds.add(existing.id);
+      if (existing.reviewStatus !== 'draft') continue;
+      addViolationSources(existing, item);
+      if (item.behaviorFact) existing.behaviorFact ??= item.behaviorFact;
+      if (!existing.conclusionCode) {
+        existing.conclusionCode = item.conclusionCode;
+        existing.conclusionLabel = item.conclusionLabel;
+        existing.unmatchedConclusion = item.unmatchedConclusion;
+        existing.unmatchedConclusionCode = item.unmatchedConclusionCode;
+      }
+    }
   }
 
   let validDraftCount = 0;

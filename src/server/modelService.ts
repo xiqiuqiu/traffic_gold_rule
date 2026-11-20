@@ -52,6 +52,10 @@ function buildSystemInstruction(): string {
     '   - 若 presenceStatus 为 present 或 explicit_negative，必须保留原文 rawValue，并给出至少 1 条准确的页码 page（从 1 开始）与最短原文摘录 quote；',
     '   - normalizedValues 必须尽量对齐字段给定的受控词表 options（单选字段最多 1 个元素，多选字段可多个元素）；',
     '4. 如文书包含违法行为、事故形成原因及责任划分，可同步提取至 legalConclusions 数组（category 为 violation / cause / liability）。',
+    '   - violation 按主体和适用阶段逐项提取独立的违法行为事实。先从事实和原因分析段找出该人的每一种具体行为，再逐一核对认定段中的法律依据。一个人同段有多项行为，逐项输出，不得概括为一个综合违法名称。',
+    '   - 违法的 eventId 仅在文书明确将该项认定限定到某个阶段时填写。即使只有一次碰撞，或行为发生在该碰撞前后，文书没有分阶段认定时均留空。',
+    '   - 每条 violation 的 behaviorFact 摘录仅描述该项行为的最短完整原文，保留否定、条件和对象；rawText 保留相关原文，evidences 可共享同段。一个行为被多次描述或引用多项法条，只输出一条，用分号在 lawArticle 中列出该行为的全部依据。不要根据法条数量另造行为，不能确定归属的法条不得硬配。',
+    '   - 每个行为单独对照违法码表。必须核对主体类型、行为对象、道路条件与限定词。事实不足或候选不唯一时保留该行为，conclusionCode 留空，conclusionLabel 填该行为的原文短语。区分设备操作资格、车辆登记和驾驶证资格，不要相互推断。',
     '5. 对原文明确认定的责任，逐一列出责任人和责任等级，包括明确无责的人。分阶段认定时按主体和阶段分别建项，eventId 对应 E 实体，实体名称保留原文阶段或碰撞次序。即使是多阶段事故，对覆盖全案、原文未限定到某阶段的认定（例如单独陈述某当事人无责任），eventId 必须留空。不得以当事人出现的位置或其参与过的碰撞推断责任阶段。',
   ].join('\n');
 }
@@ -160,6 +164,7 @@ const PREANALYZE_RESPONSE_SCHEMA = {
           rawText: {
             type: Type.STRING,
           },
+          behaviorFact: { type: Type.STRING, description: '仅 violation 填写，摘录区分本项行为的原文短语。' },
           lawArticle: {
             type: Type.STRING,
           },
@@ -189,7 +194,7 @@ function buildOpenAiJsonOutputInstruction(): string {
     '- summary: string（一句话概括核心事实与实体概览）',
     '- entities: Array<{ id: string, kind: "ACC"|"P"|"V"|"E"|"R"|"I"|"O", label: string, subtitle?: string, roleLabel?: string }>',
     '- fieldRecords: Array<{ entityId: string, fieldCode: string, presenceStatus: string, rawValue: string, normalizedValues: string[], evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
-    '- legalConclusions?: Array<{ category: "violation"|"cause"|"liability", subjectId: string, eventId?: string, presenceStatus: string, rawText: string, lawArticle?: string, conclusionCode?: string, conclusionLabel: string, evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
+    '- legalConclusions?: Array<{ category: "violation"|"cause"|"liability", subjectId: string, eventId?: string, presenceStatus: string, rawText: string, behaviorFact?: string, lawArticle?: string, conclusionCode?: string, conclusionLabel: string, evidences: Array<{ page: number, quote: string, lineIds?: string[] }> }>',
   ].join('\n');
 }
 
